@@ -4,10 +4,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:intl/intl.dart';
 import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 List<CameraDescription> cameras = [];
 
@@ -49,6 +49,9 @@ class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   bool _isCameraReady = false;
   bool _isProcessing = false;
+  bool _isFlashOn = false;
+  int _selectedCameraIndex = 0;
+  Uint8List? _lastCapturedBytes;
 
   double _lat = 26.976795;
   double _lon = 75.780594;
@@ -67,7 +70,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _updateClock();
     _loadArawaliLogo();
     _initLocation();
-    _initCamera();
+    _initCamera(_selectedCameraIndex);
   }
 
   void _updateClock() {
@@ -105,11 +108,18 @@ class _CameraScreenState extends State<CameraScreen> {
       _lat = pos.latitude;
       _lon = pos.longitude;
 
-      List<Placemark> placemarks = await placemarkFromCoordinates(_lat, _lon);
-      if (placemarks.isNotEmpty) {
-        Placemark place = placemarks.first;
-        _city = "${place.locality ?? 'Jaipur'}, ${place.administrativeArea ?? 'Rajasthan'}, ${place.country ?? 'India'}";
-        _address = "${place.street ?? ''}, ${place.subLocality ?? ''}, ${place.locality ?? ''} ${place.postalCode ?? ''}";
+      final url = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=json&lat=$_lat&lon=$_lon');
+      final res = await http.get(url, headers: {'User-Agent': 'ArawaliMapCamera/1.0'});
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data != null && data['address'] != null) {
+          final addr = data['address'];
+          final city = addr['city'] ?? addr['state_district'] ?? addr['town'] ?? 'Jaipur';
+          final state = addr['state'] ?? 'Rajasthan';
+          final country = addr['country'] ?? 'India';
+          _city = "$city, $state, $country";
+          _address = data['display_name'] ?? _address;
+        }
       }
       if (mounted) setState(() {});
     } catch (e) {
@@ -117,22 +127,77 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  Future<void> _initCamera() async {
+  Future<void> _initCamera(int index) async {
     if (cameras.isEmpty) return;
     _controller = CameraController(
-      cameras[0],
+      cameras[index],
       ResolutionPreset.high,
       enableAudio: false,
     );
 
     try {
       await _controller!.initialize();
-      if (mounted) setState(() => _isCameraReady = true);
+      if (mounted) {
+        setState(() {
+          _isCameraReady = true;
+          _selectedCameraIndex = index;
+          _isFlashOn = false;
+        });
+      }
     } catch (e) {
       debugPrint("Camera err: $e");
     }
   }
 
+  // 1. Flash Toggle
+  Future<void> _toggleFlash() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    try {
+      if (_isFlashOn) {
+        await _controller!.setFlashMode(FlashMode.off);
+        setState(() => _isFlashOn = false);
+      } else {
+        await _controller!.setFlashMode(FlashMode.torch);
+        setState(() => _isFlashOn = true);
+      }
+    } catch (e) {
+      debugPrint("Flash err: $e");
+    }
+  }
+
+  // 2. Flip Camera
+  Future<void> _flipCamera() async {
+    if (cameras.length < 2) return;
+    int newIndex = (_selectedCameraIndex == 0) ? 1 : 0;
+    await _initCamera(newIndex);
+  }
+
+  // 3. Fullscreen Photo Viewer (Preview)
+  void _openPreviewDialog() {
+    if (_lastCapturedBytes == null) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(10),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Image.memory(_lastCapturedBytes!, fit: BoxFit.contain),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white, size: 30),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 4. Capture & Stamp Photo
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
@@ -213,8 +278,12 @@ class _CameraScreenState extends State<CameraScreen> {
       final byteData = await finalImage.toByteData(format: ui.ImageByteFormat.png);
       final pngBytes = byteData!.buffer.asUint8List();
 
-      // Save directly to Phone Gallery!
+      // Save directly to Gallery!
       await Gal.putImageBytes(pngBytes, album: "Arawali Camera", name: "ARAWALI_${DateTime.now().millisecondsSinceEpoch}.png");
+
+      setState(() {
+        _lastCapturedBytes = pngBytes;
+      });
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -268,14 +337,23 @@ class _CameraScreenState extends State<CameraScreen> {
         children: [
           Positioned.fill(child: CameraPreview(_controller!)),
 
-          // Top Header
+          // Top Header (Flash, Brand, Flip Buttons)
           Positioned(
             top: 40,
-            left: 20,
-            right: 20,
+            left: 16,
+            right: 16,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                IconButton(
+                  onPressed: _toggleFlash,
+                  icon: Icon(
+                    _isFlashOn ? Icons.flash_on : Icons.flash_off,
+                    color: _isFlashOn ? const Color(0xFFFFCC00) : Colors.white,
+                    size: 28,
+                  ),
+                  style: IconButton.styleFrom(backgroundColor: Colors.black54),
+                ),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   decoration: BoxDecoration(
@@ -290,6 +368,11 @@ class _CameraScreenState extends State<CameraScreen> {
                       Text("ARAWALI PRO", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
                     ],
                   ),
+                ),
+                IconButton(
+                  onPressed: _flipCamera,
+                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 28),
+                  style: IconButton.styleFrom(backgroundColor: Colors.black54),
                 ),
               ],
             ),
@@ -321,39 +404,64 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // Shutter Button
+          // Bottom Controls (Preview Thumbnail, Shutter Button)
           Positioned(
             bottom: 25,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: GestureDetector(
-                onTap: _isProcessing ? null : _captureAndStamp,
-                child: Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 4),
-                    boxShadow: const [BoxShadow(color: Color(0x66FFCC00), blurRadius: 20)],
+            left: 25,
+            right: 25,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // 🖼️ Captured Photo Preview Thumbnail
+                GestureDetector(
+                  onTap: _openPreviewDialog,
+                  child: Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFFFCC00), width: 2),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: _lastCapturedBytes != null
+                        ? Image.memory(_lastCapturedBytes!, fit: BoxFit.cover)
+                        : const Icon(Icons.photo, color: Colors.white54),
                   ),
-                  child: Center(
-                    child: Container(
-                      width: 64,
-                      height: 64,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          colors: [Color(0xFFFFDD00), Color(0xFFFF8800)],
+                ),
+
+                // Shutter Button
+                GestureDetector(
+                  onTap: _isProcessing ? null : _captureAndStamp,
+                  child: Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 4),
+                      boxShadow: const [BoxShadow(color: Color(0x66FFCC00), blurRadius: 20)],
+                    ),
+                    child: Center(
+                      child: Container(
+                        width: 64,
+                        height: 64,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [Color(0xFFFFDD00), Color(0xFFFF8800)],
+                          ),
                         ),
+                        child: _isProcessing
+                            ? const CircularProgressIndicator(color: Colors.black)
+                            : const Icon(Icons.camera_alt, color: Colors.black, size: 32),
                       ),
-                      child: _isProcessing
-                          ? const CircularProgressIndicator(color: Colors.black)
-                          : const Icon(Icons.camera_alt, color: Colors.black, size: 32),
                     ),
                   ),
                 ),
-              ),
+
+                // Spacer
+                const SizedBox(width: 52),
+              ],
             ),
           ),
         ],
