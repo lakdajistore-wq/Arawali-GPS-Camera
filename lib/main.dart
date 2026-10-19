@@ -29,7 +29,7 @@ class ArawaliCameraApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Arawali Map Camera',
+      title: 'Arawali GPS Camera',
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: Colors.black,
         primaryColor: const Color(0xFFFFCC00),
@@ -52,13 +52,15 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isProcessing = false;
   bool _isFlashOn = false;
   int _selectedCameraIndex = 0;
-  
-  List<Uint8List> _capturedPhotos = [];
+  double _currentZoom = 1.0;
+  double _exposureValue = 0.0;
 
-  double _lat = 26.974355;
-  double _lon = 75.779012;
+  List<Uint8List> _allCapturedPhotos = [];
+
+  double _lat = 26.975279;
+  double _lon = 75.778887;
   String _city = "Jaipur, Rajasthan, India";
-  String _address = "Road Number 1, Malhotra Nagar, विश्वकर्मा इंडस्ट्री...";
+  String _address = "F 768b, Rd Number - 1d, Vishwakarma Industrial Area, Jaipur 302013";
   String _timeStr = "";
   ui.Image? _arawaliLogo;
   ui.Image? _satelliteMapImage;
@@ -190,11 +192,21 @@ class _CameraScreenState extends State<CameraScreen> {
     await _initCamera(newIndex);
   }
 
-  // Gallery Screen with All Captured Photos
-  void _openGallery() {
-    if (_capturedPhotos.isEmpty) {
+  Future<void> _setZoom(double zoom) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    try {
+      await _controller!.setZoomLevel(zoom);
+      setState(() => _currentZoom = zoom);
+    } catch (e) {
+      debugPrint("Zoom err: $e");
+    }
+  }
+
+  // Full In-App Gallery Viewer (Shows All Photos Taken in This App)
+  void _openAllPhotosGallery() {
+    if (_allCapturedPhotos.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("No photos captured yet!")),
+        const SnackBar(content: Text("No photos taken yet! Click a photo first.")),
       );
       return;
     }
@@ -204,7 +216,7 @@ class _CameraScreenState extends State<CameraScreen> {
       MaterialPageRoute(
         builder: (_) => Scaffold(
           appBar: AppBar(
-            title: const Text("Arawali Gallery", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
+            title: Text("Arawali Gallery (${_allCapturedPhotos.length})", style: const TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
             backgroundColor: Colors.black,
           ),
           body: GridView.builder(
@@ -215,7 +227,7 @@ class _CameraScreenState extends State<CameraScreen> {
               mainAxisSpacing: 10,
               childAspectRatio: 3 / 4,
             ),
-            itemCount: _capturedPhotos.length,
+            itemCount: _allCapturedPhotos.length,
             itemBuilder: (ctx, i) => GestureDetector(
               onTap: () {
                 showDialog(
@@ -226,7 +238,7 @@ class _CameraScreenState extends State<CameraScreen> {
                     child: Stack(
                       alignment: Alignment.topRight,
                       children: [
-                        Image.memory(_capturedPhotos[i], fit: BoxFit.contain),
+                        Image.memory(_allCapturedPhotos[i], fit: BoxFit.contain),
                         IconButton(
                           icon: const Icon(Icons.close, color: Colors.white, size: 30),
                           onPressed: () => Navigator.pop(context),
@@ -238,7 +250,7 @@ class _CameraScreenState extends State<CameraScreen> {
               },
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(10),
-                child: Image.memory(_capturedPhotos[i], fit: BoxFit.cover),
+                child: Image.memory(_allCapturedPhotos[i], fit: BoxFit.cover),
               ),
             ),
           ),
@@ -247,11 +259,10 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // Capture, 4:3 Crop, Draw Satellite Map & Arawali Stamp
+  // Capture Photo, 4:3 Crop, Draw Satellite Map & Arawali Stamp
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
-    // Mechanical Click Sound & Haptic Vibration
     SystemSound.play(SystemSoundType.click);
     HapticFeedback.mediumImpact();
 
@@ -279,7 +290,7 @@ class _CameraScreenState extends State<CameraScreen> {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, finalW, finalH));
 
-      // Draw 4:3 Cropped Image
+      // Draw 4:3 Base Photo
       canvas.drawImageRect(
         fullImg,
         Rect.fromLTWH(cropX, cropY, finalW, finalH),
@@ -287,7 +298,7 @@ class _CameraScreenState extends State<CameraScreen> {
         Paint(),
       );
 
-      // Draw Glass Card Stamp
+      // Draw Dark Glass Stamp Card
       final cardH = finalH * 0.175;
       final cardW = finalW - 40;
       final cardX = 20.0;
@@ -336,7 +347,7 @@ class _CameraScreenState extends State<CameraScreen> {
       final textX = mapX + mapSize + 18;
       final baseFont = cardH * 0.10;
 
-      // Header
+      // Header Brand
       _drawText(canvas, "★ ARAWALI MAP CAMERA ★", Offset(textX, cardY + (baseFont * 1.3)), baseFont - 1, const Color(0xFFFFCC00), isBold: true);
 
       // Company Logo on Stamp (Top Right)
@@ -369,11 +380,11 @@ class _CameraScreenState extends State<CameraScreen> {
       final byteData = await finalImage.toByteData(format: ui.ImageByteFormat.png);
       final pngBytes = byteData!.buffer.asUint8List();
 
-      // Save directly to Phone Gallery!
+      // Save to Gallery
       await Gal.putImageBytes(pngBytes, album: "Arawali Camera", name: "ARAWALI_${DateTime.now().millisecondsSinceEpoch}.png");
 
       setState(() {
-        _capturedPhotos.insert(0, pngBytes);
+        _allCapturedPhotos.insert(0, pngBytes);
       });
 
       if (mounted) {
@@ -426,44 +437,85 @@ class _CameraScreenState extends State<CameraScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          Positioned.fill(child: CameraPreview(_controller!)),
+          // 4:3 Camera Viewport
+          Positioned.fill(
+            child: AspectRatio(
+              aspectRatio: 3 / 4,
+              child: CameraPreview(_controller!),
+            ),
+          ),
 
-          // Top Header (Flash, Brand, Flip Buttons)
+          // 2050 Pro Center Reticle
+          Center(
+            child: Container(
+              width: 70,
+              height: 70,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white38, width: 1.5),
+              ),
+            ),
+          ),
+
+          // Right Side Sun Exposure / Brightness Slider
           Positioned(
-            top: 40,
-            left: 16,
-            right: 16,
+            right: 15,
+            top: 180,
+            bottom: 220,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.wb_sunny_outlined, color: Color(0xFFFFCC00), size: 22),
+                const SizedBox(height: 5),
+                Container(
+                  width: 3,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFCC00),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                const Text("0", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ),
+
+          // Top Header (6 Pro Icons Bar - Just like original GPS Map Camera)
+          Positioned(
+            top: 45,
+            left: 12,
+            right: 12,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 IconButton(
-                  onPressed: _toggleFlash,
+                  icon: const Icon(Icons.grid_on, color: Colors.white, size: 22),
+                  onPressed: () {},
+                ),
+                IconButton(
                   icon: Icon(
                     _isFlashOn ? Icons.flash_on : Icons.flash_off,
                     color: _isFlashOn ? const Color(0xFFFFCC00) : Colors.white,
-                    size: 28,
+                    size: 24,
                   ),
-                  style: IconButton.styleFrom(backgroundColor: Colors.black54),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.7),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xFFFFCC00)),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.gps_fixed, color: Color(0xFF00FF66), size: 16),
-                      SizedBox(width: 8),
-                      Text("ARAWALI PRO", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
-                    ],
-                  ),
+                  onPressed: _toggleFlash,
                 ),
                 IconButton(
+                  icon: const Icon(Icons.note_add_outlined, color: Colors.white, size: 22),
+                  onPressed: () {},
+                ),
+                IconButton(
+                  icon: const Icon(Icons.map_outlined, color: Colors.white, size: 22),
+                  onPressed: _fetchSatelliteMap,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 24),
                   onPressed: _flipCamera,
-                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 28),
-                  style: IconButton.styleFrom(backgroundColor: Colors.black54),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.settings, color: Colors.white, size: 22),
+                  onPressed: () {},
                 ),
               ],
             ),
@@ -471,25 +523,24 @@ class _CameraScreenState extends State<CameraScreen> {
 
           // Bottom Stamp Live Preview
           Positioned(
-            bottom: 125,
+            bottom: 155,
             left: 14,
             right: 14,
             child: Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.85),
-                borderRadius: BorderRadius.circular(14),
+                color: const Color(0xEE12161C),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0x66FFCC00)),
               ),
               child: Row(
                 children: [
-                  // Mini Preview Map
                   Container(
-                    width: 80,
-                    height: 80,
+                    width: 78,
+                    height: 78,
                     decoration: BoxDecoration(
                       color: const Color(0xFF1E293B),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                       border: Border.all(color: Colors.white24),
                     ),
                     child: Stack(
@@ -500,17 +551,17 @@ class _CameraScreenState extends State<CameraScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text("★ ARAWALI MAP CAMERA ★", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 12)),
-                        const SizedBox(height: 2),
-                        Text("$_city 🇮🇳", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                        Text(_address, style: const TextStyle(color: Colors.white70, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
-                        const SizedBox(height: 2),
-                        Text("Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}°", style: const TextStyle(color: Color(0xFF00FF66), fontSize: 11, fontFamily: 'monospace')),
+                        const Text("★ ARAWALI MAP CAMERA ★", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
+                        const SizedBox(height: 1),
+                        Text("$_city 🇮🇳", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                        Text(_address, style: const TextStyle(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
+                        const SizedBox(height: 1),
+                        Text("Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}°", style: const TextStyle(color: Color(0xFF00FF66), fontSize: 10, fontFamily: 'monospace')),
                       ],
                     ),
                   ),
@@ -519,47 +570,105 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // Bottom Controls (Gallery, Shutter Button)
+          // 1x / 2x Zoom Floating Controls
           Positioned(
-            bottom: 25,
-            left: 30,
-            right: 30,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                // 🖼️ Multi-Photo Gallery Thumbnail
-                GestureDetector(
-                  onTap: _openGallery,
-                  child: Container(
-                    width: 55,
-                    height: 55,
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFFFFCC00), width: 2),
+            bottom: 110,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  GestureDetector(
+                    onTap: () => _setZoom(1.0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _currentZoom == 1.0 ? const Color(0xFFFFCC00) : Colors.black54,
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: Text("1x", style: TextStyle(color: _currentZoom == 1.0 ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: _capturedPhotos.isNotEmpty
-                        ? Image.memory(_capturedPhotos[0], fit: BoxFit.cover)
-                        : const Icon(Icons.photo_library, color: Color(0xFFFFCC00), size: 28),
+                  ),
+                  const SizedBox(width: 10),
+                  GestureDetector(
+                    onTap: () => _setZoom(2.0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _currentZoom == 2.0 ? const Color(0xFFFFCC00) : Colors.black54,
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: Text("2x", style: TextStyle(color: _currentZoom == 2.0 ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Bottom Bar 5 Control Buttons (Preview, Locations, Shutter, Storage, Template)
+          Positioned(
+            bottom: 15,
+            left: 15,
+            right: 15,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // 1. Preview (Opens All Captured Photos Gallery)
+                GestureDetector(
+                  onTap: _openAllPhotosGallery,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.black87,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFFFCC00), width: 1.5),
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: _allCapturedPhotos.isNotEmpty
+                            ? Image.memory(_allCapturedPhotos[0], fit: BoxFit.cover)
+                            : const Icon(Icons.photo_library, color: Color(0xFFFFCC00), size: 22),
+                      ),
+                      const SizedBox(height: 3),
+                      const Text("Preview", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                    ],
                   ),
                 ),
 
-                // Golden Glowing Shutter Button
+                // 2. Locations
+                GestureDetector(
+                  onTap: _initLocation,
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.location_on_outlined, color: Colors.white, size: 26),
+                      SizedBox(height: 3),
+                      Text("Locations", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                    ],
+                  ),
+                ),
+
+                // 3. Golden Glowing Shutter Button
                 GestureDetector(
                   onTap: _isProcessing ? null : _captureAndStamp,
                   child: Container(
-                    width: 82,
-                    height: 82,
+                    width: 76,
+                    height: 76,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 4),
-                      boxShadow: const [BoxShadow(color: Color(0x66FFCC00), blurRadius: 20)],
+                      border: Border.all(color: Colors.white, width: 3.5),
+                      boxShadow: const [BoxShadow(color: Color(0x66FFCC00), blurRadius: 18)],
                     ),
                     child: Center(
                       child: Container(
-                        width: 66,
-                        height: 66,
+                        width: 62,
+                        height: 62,
                         decoration: const BoxDecoration(
                           shape: BoxShape.circle,
                           gradient: LinearGradient(
@@ -568,13 +677,41 @@ class _CameraScreenState extends State<CameraScreen> {
                         ),
                         child: _isProcessing
                             ? const CircularProgressIndicator(color: Colors.black)
-                            : const Icon(Icons.camera_alt, color: Colors.black, size: 34),
+                            : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
                       ),
                     ),
                   ),
                 ),
 
-                const SizedBox(width: 55),
+                // 4. Storage
+                GestureDetector(
+                  onTap: _openAllPhotosGallery,
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.folder_open, color: Colors.white, size: 26),
+                      SizedBox(height: 3),
+                      Text("Storage", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                    ],
+                  ),
+                ),
+
+                // 5. Template
+                GestureDetector(
+                  onTap: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Arawali Pro 2050 Template Active")),
+                    );
+                  },
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.grid_view, color: Colors.white, size: 26),
+                      SizedBox(height: 3),
+                      Text("Template", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
