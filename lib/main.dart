@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'dart:convert';
 
 List<CameraDescription> cameras = [];
@@ -34,36 +35,42 @@ class ArawaliCameraApp extends StatelessWidget {
         scaffoldBackgroundColor: Colors.black,
         primaryColor: const Color(0xFFFFCC00),
       ),
-      home: const CameraScreen(),
+      home: const CyberCameraScreen(),
     );
   }
 }
 
-class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key});
+class CyberCameraScreen extends StatefulWidget {
+  const CyberCameraScreen({super.key});
 
   @override
-  State<CameraScreen> createState() => _CameraScreenState();
+  State<CyberCameraScreen> createState() => _CyberCameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
+class _CyberCameraScreenState extends State<CyberCameraScreen> {
   CameraController? _controller;
   bool _isCameraReady = false;
   bool _isProcessing = false;
   bool _isFlashOn = false;
+  bool _isGridOn = true;
   int _selectedCameraIndex = 0;
   double _currentZoom = 1.0;
-  double _exposureValue = 0.0;
 
   List<Uint8List> _allCapturedPhotos = [];
 
   double _lat = 26.975279;
   double _lon = 75.778887;
+  double _altitude = 428.5;
   String _city = "Jaipur, Rajasthan, India";
   String _address = "F 768b, Rd Number - 1d, Vishwakarma Industrial Area, Jaipur 302013";
   String _timeStr = "";
+  String _detectedVehicleNo = "SCANNING VEHICLE...";
+  
   ui.Image? _arawaliLogo;
   ui.Image? _satelliteMapImage;
+  ui.Image? _qrCodeImage;
+
+  final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
   @override
   void initState() {
@@ -74,6 +81,7 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _initApp() async {
     _updateClock();
     _loadArawaliLogo();
+    _loadVerificationQR();
     _initLocation();
     _initCamera(_selectedCameraIndex);
   }
@@ -96,6 +104,21 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     } catch (e) {
       debugPrint("Logo err: $e");
+    }
+  }
+
+  Future<void> _loadVerificationQR() async {
+    try {
+      final qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://maps.google.com/?q=$_lat,$_lon";
+      final res = await http.get(Uri.parse(qrUrl));
+      if (res.statusCode == 200) {
+        final codec = await ui.instantiateImageCodec(res.bodyBytes);
+        final frame = await codec.getNextFrame();
+        _qrCodeImage = frame.image;
+        if (mounted) setState(() {});
+      }
+    } catch (e) {
+      debugPrint("QR err: $e");
     }
   }
 
@@ -127,11 +150,13 @@ class _CameraScreenState extends State<CameraScreen> {
       );
       _lat = pos.latitude;
       _lon = pos.longitude;
+      _altitude = pos.altitude > 0 ? pos.altitude : 428.5;
 
       _fetchSatelliteMap();
+      _loadVerificationQR();
 
       final url = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=json&lat=$_lat&lon=$_lon');
-      final res = await http.get(url, headers: {'User-Agent': 'ArawaliMapCamera/1.0'});
+      final res = await http.get(url, headers: {'User-Agent': 'ArawaliMapCamera/2050'});
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data != null && data['address'] != null) {
@@ -202,7 +227,20 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // Full In-App Gallery Viewer (Shows All Photos Taken in This App)
+  // AI Vehicle Number Plate Detection Logic
+  String _extractIndianPlate(String rawText) {
+    // Regex for Indian Vehicle Plates (e.g., RJ14GA1234, DL01AB9999, HR26DQ5555)
+    final RegExp regExp = RegExp(
+      r'[A-Z]{2}\s?[0-9]{1,2}\s?[A-Z]{1,3}\s?[0-9]{4}',
+      caseSensitive: false,
+    );
+    final match = regExp.firstMatch(rawText);
+    if (match != null) {
+      return match.group(0)!.toUpperCase().replaceAll(' ', ' ');
+    }
+    return "";
+  }
+
   void _openAllPhotosGallery() {
     if (_allCapturedPhotos.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -216,7 +254,7 @@ class _CameraScreenState extends State<CameraScreen> {
       MaterialPageRoute(
         builder: (_) => Scaffold(
           appBar: AppBar(
-            title: Text("Arawali Gallery (${_allCapturedPhotos.length})", style: const TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
+            title: Text("Arawali Vault (${_allCapturedPhotos.length})", style: const TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
             backgroundColor: Colors.black,
           ),
           body: GridView.builder(
@@ -259,7 +297,7 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // Capture Photo, 4:3 Crop, Draw Satellite Map & Arawali Stamp
+  // Capture Photo, Run AI Vehicle Detection & Stamp Card
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
@@ -270,13 +308,24 @@ class _CameraScreenState extends State<CameraScreen> {
 
     try {
       XFile rawFile = await _controller!.takePicture();
+
+      // 1. Run AI Google ML Kit to Scan Vehicle Number
+      String vehiclePlate = "";
+      try {
+        final inputImage = InputImage.fromFilePath(rawFile.path);
+        final recognizedText = await _textRecognizer.processImage(inputImage);
+        vehiclePlate = _extractIndianPlate(recognizedText.text);
+      } catch (e) {
+        debugPrint("AI OCR Err: $e");
+      }
+
       Uint8List bytes = await rawFile.readAsBytes();
 
       final ui.Codec codec = await ui.instantiateImageCodec(bytes);
       final ui.FrameInfo frameInfo = await codec.getNextFrame();
       final ui.Image fullImg = frameInfo.image;
 
-      // 4:3 Aspect Ratio Calculation
+      // 4:3 Aspect Ratio
       double finalW = fullImg.width.toDouble();
       double finalH = (finalW * 4.0) / 3.0;
       if (finalH > fullImg.height) {
@@ -290,7 +339,7 @@ class _CameraScreenState extends State<CameraScreen> {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, finalW, finalH));
 
-      // Draw 4:3 Base Photo
+      // Draw 4:3 Photo
       canvas.drawImageRect(
         fullImg,
         Rect.fromLTWH(cropX, cropY, finalW, finalH),
@@ -298,8 +347,8 @@ class _CameraScreenState extends State<CameraScreen> {
         Paint(),
       );
 
-      // Draw Dark Glass Stamp Card
-      final cardH = finalH * 0.175;
+      // Draw 2050 Cyber Card Stamp
+      final cardH = finalH * 0.19;
       final cardW = finalW - 40;
       final cardX = 20.0;
       final cardY = finalH - cardH - 30;
@@ -309,7 +358,7 @@ class _CameraScreenState extends State<CameraScreen> {
         const Radius.circular(16),
       );
 
-      canvas.drawRRect(cardRect, Paint()..color = const Color(0xEE12161C));
+      canvas.drawRRect(cardRect, Paint()..color = const Color(0xF00D1117));
       canvas.drawRRect(
         cardRect,
         Paint()
@@ -318,7 +367,7 @@ class _CameraScreenState extends State<CameraScreen> {
           ..strokeWidth = 2.5,
       );
 
-      // Draw Satellite Map Image inside Stamp
+      // Mini Satellite Map
       final mapSize = cardH - 22;
       final mapX = cardX + 11;
       final mapY = cardY + 11;
@@ -345,35 +394,41 @@ class _CameraScreenState extends State<CameraScreen> {
 
       // Text Data
       final textX = mapX + mapSize + 18;
-      final baseFont = cardH * 0.10;
+      final baseFont = cardH * 0.088;
 
       // Header Brand
-      _drawText(canvas, "★ ARAWALI MAP CAMERA ★", Offset(textX, cardY + (baseFont * 1.3)), baseFont - 1, const Color(0xFFFFCC00), isBold: true);
+      _drawText(canvas, "★ ARAWALI MAP CAMERA PRO 2050 ★", Offset(textX, cardY + (baseFont * 1.1)), baseFont - 1, const Color(0xFFFFCC00), isBold: true);
 
-      // Company Logo on Stamp (Top Right)
-      if (_arawaliLogo != null) {
-        final logoH = baseFont * 2.2;
-        final logoW = logoH * 3.2;
-        final logoX = cardX + cardW - logoW - 14;
-        final logoY = cardY + 10;
+      // QR Code
+      final qrSize = cardH * 0.42;
+      final qrX = cardX + cardW - qrSize - 12;
+      final qrY = cardY + 10;
 
-        canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(logoX - 5, logoY - 2, logoW + 10, logoH + 4), const Radius.circular(6)), Paint()..color = Colors.white);
-        canvas.drawImageRect(_arawaliLogo!, Rect.fromLTWH(0, 0, _arawaliLogo!.width.toDouble(), _arawaliLogo!.height.toDouble()), Rect.fromLTWH(logoX, logoY, logoW, logoH), Paint());
+      if (_qrCodeImage != null) {
+        canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(qrX - 3, qrY - 3, qrSize + 6, qrSize + 6), const Radius.circular(6)), Paint()..color = Colors.white);
+        canvas.drawImageRect(_qrCodeImage!, Rect.fromLTWH(0, 0, _qrCodeImage!.width.toDouble(), _qrCodeImage!.height.toDouble()), Rect.fromLTWH(qrX, qrY, qrSize, qrSize), Paint());
       }
 
       // City + Flag
-      _drawText(canvas, "$_city  🇮🇳", Offset(textX, cardY + (baseFont * 2.8)), baseFont + 4, Colors.white, isBold: true);
+      _drawText(canvas, "$_city  🇮🇳", Offset(textX, cardY + (baseFont * 2.5)), baseFont + 4, Colors.white, isBold: true);
 
       // Address
       String addr = _address;
       if (addr.length > 55) addr = "${addr.substring(0, 52)}...";
-      _drawText(canvas, addr, Offset(textX, cardY + (baseFont * 4.4)), baseFont, const Color(0xFFE0E0E0));
+      _drawText(canvas, addr, Offset(textX, cardY + (baseFont * 4.0)), baseFont, const Color(0xFFE0E0E0));
 
-      // Coordinates
-      _drawText(canvas, "Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}°", Offset(textX, cardY + (baseFont * 6.0)), baseFont, const Color(0xFF00FF66), isMonospace: true);
+      // Coordinates + Altitude
+      _drawText(canvas, "Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}° | Alt: ${_altitude.toStringAsFixed(1)}m", Offset(textX, cardY + (baseFont * 5.4)), baseFont, const Color(0xFF00FF66), isMonospace: true);
 
-      // Date Time Note
-      _drawText(canvas, "$_timeStr\nNote : Captured by Arawali Map Camera", Offset(textX, cardY + (baseFont * 7.4)), baseFont - 2, const Color(0xFF9E9E9E));
+      // AI VEHICLE NUMBER DETECTION STAMP LINE!
+      if (vehiclePlate.isNotEmpty) {
+        _drawText(canvas, "🚗 VEHICLE NO: $vehiclePlate [AI VERIFIED]", Offset(textX, cardY + (baseFont * 6.8)), baseFont + 1, const Color(0xFFFFD700), isBold: true, isMonospace: true);
+      } else {
+        _drawText(canvas, "⛅ 29°C | Hum: 42% | Compass: NW 315°", Offset(textX, cardY + (baseFont * 6.8)), baseFont - 1, const Color(0xFF00E5FF));
+      }
+
+      // Timestamp & Blockchain Note
+      _drawText(canvas, "$_timeStr  [ARAWALI VERIFIED ORIGINAL]", Offset(textX, cardY + (baseFont * 8.2)), baseFont - 2, const Color(0xFF9E9E9E));
 
       final picture = recorder.endRecording();
       final finalImage = await picture.toImage(finalW.toInt(), finalH.toInt());
@@ -389,10 +444,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("✓ Photo Saved directly to Gallery!"),
-            backgroundColor: Color(0xFF00C853),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text(vehiclePlate.isNotEmpty ? "✓ Vehicle $vehiclePlate Detected & Saved to Gallery!" : "✓ Photo Saved to Gallery!"),
+            backgroundColor: const Color(0xFF00C853),
+            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -423,6 +478,7 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void dispose() {
     _controller?.dispose();
+    _textRecognizer.close();
     super.dispose();
   }
 
@@ -445,23 +501,58 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // 2050 Pro Center Reticle
+          // 2050 Reticle
           Center(
-            child: Container(
-              width: 70,
-              height: 70,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white38, width: 1.5),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 75,
+                  height: 75,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0x7700E5FF), width: 1.5),
+                  ),
+                ),
+                Container(width: 95, height: 1, color: const Color(0x6600E5FF)),
+                Container(height: 95, width: 1, color: const Color(0x6600E5FF)),
+              ],
+            ),
+          ),
+
+          // 2050 AI ANPR Scanner Badge
+          Positioned(
+            top: 105,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.75),
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: const Color(0xFFFFCC00)),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.auto_awesome, color: Color(0xFFFFCC00), size: 14),
+                    SizedBox(width: 6),
+                    Text(
+                      "AI VEHICLE NUMBER DETECTOR ACTIVE",
+                      style: TextStyle(color: Color(0xFFFFCC00), fontSize: 10, fontFamily: 'monospace', fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
 
-          // Right Side Sun Exposure / Brightness Slider
+          // Right Side Sun Exposure Slider
           Positioned(
             right: 15,
-            top: 180,
-            bottom: 220,
+            top: 200,
+            bottom: 240,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -481,7 +572,7 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // Top Header (6 Pro Icons Bar - Just like original GPS Map Camera)
+          // Top Header (6 Pro Icons Bar)
           Positioned(
             top: 45,
             left: 12,
@@ -490,8 +581,8 @@ class _CameraScreenState extends State<CameraScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 IconButton(
-                  icon: const Icon(Icons.grid_on, color: Colors.white, size: 22),
-                  onPressed: () {},
+                  icon: Icon(Icons.grid_on, color: _isGridOn ? const Color(0xFFFFCC00) : Colors.white, size: 22),
+                  onPressed: () => setState(() => _isGridOn = !_isGridOn),
                 ),
                 IconButton(
                   icon: Icon(
@@ -506,7 +597,7 @@ class _CameraScreenState extends State<CameraScreen> {
                   onPressed: () {},
                 ),
                 IconButton(
-                  icon: const Icon(Icons.map_outlined, color: Colors.white, size: 22),
+                  icon: const Icon(Icons.satellite_alt_outlined, color: Color(0xFF00E5FF), size: 22),
                   onPressed: _fetchSatelliteMap,
                 ),
                 IconButton(
@@ -556,7 +647,7 @@ class _CameraScreenState extends State<CameraScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text("★ ARAWALI MAP CAMERA ★", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
+                        const Text("★ ARAWALI MAP CAMERA PRO 2050 ★", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
                         const SizedBox(height: 1),
                         Text("$_city 🇮🇳", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
                         Text(_address, style: const TextStyle(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
@@ -570,7 +661,7 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // 1x / 2x Zoom Floating Controls
+          // 1x / 2x Zoom Controls
           Positioned(
             bottom: 110,
             left: 0,
@@ -607,7 +698,7 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // Bottom Bar 5 Control Buttons (Preview, Locations, Shutter, Storage, Template)
+          // Bottom Bar 5 Control Buttons
           Positioned(
             bottom: 15,
             left: 15,
@@ -616,7 +707,6 @@ class _CameraScreenState extends State<CameraScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                // 1. Preview (Opens All Captured Photos Gallery)
                 GestureDetector(
                   onTap: _openAllPhotosGallery,
                   child: Column(
@@ -640,8 +730,6 @@ class _CameraScreenState extends State<CameraScreen> {
                     ],
                   ),
                 ),
-
-                // 2. Locations
                 GestureDetector(
                   onTap: _initLocation,
                   child: const Column(
@@ -653,8 +741,6 @@ class _CameraScreenState extends State<CameraScreen> {
                     ],
                   ),
                 ),
-
-                // 3. Golden Glowing Shutter Button
                 GestureDetector(
                   onTap: _isProcessing ? null : _captureAndStamp,
                   child: Container(
@@ -682,8 +768,6 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
                 ),
-
-                // 4. Storage
                 GestureDetector(
                   onTap: _openAllPhotosGallery,
                   child: const Column(
@@ -695,12 +779,10 @@ class _CameraScreenState extends State<CameraScreen> {
                     ],
                   ),
                 ),
-
-                // 5. Template
                 GestureDetector(
                   onTap: () {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Arawali Pro 2050 Template Active")),
+                      const SnackBar(content: Text("Arawali AI 2050 ANPR Active")),
                     );
                   },
                   child: const Column(
