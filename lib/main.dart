@@ -149,7 +149,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // 1. Flash Toggle
   Future<void> _toggleFlash() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
     try {
@@ -165,14 +164,12 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // 2. Flip Camera
   Future<void> _flipCamera() async {
     if (cameras.length < 2) return;
     int newIndex = (_selectedCameraIndex == 0) ? 1 : 0;
     await _initCamera(newIndex);
   }
 
-  // 3. Fullscreen Photo Viewer (Preview)
   void _openPreviewDialog() {
     if (_lastCapturedBytes == null) return;
     showDialog(
@@ -197,7 +194,6 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // 4. Capture & Stamp Photo
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
@@ -220,7 +216,7 @@ class _CameraScreenState extends State<CameraScreen> {
       // Draw photo
       canvas.drawImage(capturedImage, Offset.zero, Paint());
 
-      // Draw Arawali Stamp Card
+      // Draw Stamp Card
       final cardH = height * 0.18;
       final cardW = width - 40;
       final cardX = 20.0;
@@ -312,7 +308,7 @@ class _CameraScreenState extends State<CameraScreen> {
           fontFamily: isMonospace ? 'monospace' : null,
         ),
       ),
-      textDirection: TextDirection.ltr,
+      textDirection: ui.TextDirection.ltr,
     );
     textPainter.layout();
     textPainter.paint(canvas, offset);
@@ -412,7 +408,6 @@ class _CameraScreenState extends State<CameraScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // 🖼️ Captured Photo Preview Thumbnail
                 GestureDetector(
                   onTap: _openPreviewDialog,
                   child: Container(
@@ -459,7 +454,6 @@ class _CameraScreenState extends State<CameraScreen> {
                   ),
                 ),
 
-                // Spacer
                 const SizedBox(width: 52),
               ],
             ),
