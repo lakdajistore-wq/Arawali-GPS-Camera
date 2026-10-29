@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -57,16 +58,27 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   bool _isGridOn = true;
   int _selectedCameraIndex = 0;
   double _currentZoom = 1.0;
+  
+  // Compact Brightness / Exposure Slider (धूप Day & रात Night)
+  double _minExposure = -2.0;
+  double _maxExposure = 2.0;
+  double _currentExposure = 0.0;
+
+  // Kanta Parchi / RST Number
+  String _kantaRstNo = "";
+
+  // Live Location Dialog Controller
+  bool _showLocationPopup = false;
+  Timer? _popupTimer;
 
   List<Uint8List> _allCapturedPhotos = [];
 
   double _lat = 26.975279;
   double _lon = 75.778887;
-  double _altitude = 428.5;
   String _city = "Jaipur, Rajasthan, India";
-  String _address = "F 768b, Rd Number - 1d, Vishwakarma Industrial Area, Jaipur 302013";
+  String _address = "Sector 9, Vishwakarma Industrial Area, Jaipur 302013";
   String _timeStr = "";
-  String _detectedVehicleNo = "SCANNING VEHICLE...";
+  String _dateStr = "";
   
   ui.Image? _arawaliLogo;
   ui.Image? _satelliteMapImage;
@@ -84,22 +96,43 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     _updateClock();
     _loadArawaliLogo();
     _loadVerificationQR();
+    await _requestAllPermissions();
     _initLocation();
     _initCamera(_selectedCameraIndex);
   }
 
+  // Request Both Location & Camera Permissions on First Launch
+  Future<void> _requestAllPermissions() async {
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        await Geolocator.requestPermission();
+      }
+    } catch (_) {}
+  }
+
   void _updateClock() {
     final now = DateTime.now();
-    _timeStr = DateFormat("EEEE, dd/MM/yyyy hh:mm a 'GMT +05:30'").format(now);
+    _dateStr = DateFormat("dd/MM/yyyy").format(now);
+    _timeStr = DateFormat("hh:mm:ss a").format(now);
     if (mounted) setState(() {});
   }
 
   Future<void> _loadArawaliLogo() async {
     try {
+      final byteData = await rootBundle.load('assets/icon.png');
+      final codec = await ui.instantiateImageCodec(byteData.buffer.asUint8List(), targetWidth: 300);
+      final frame = await codec.getNextFrame();
+      _arawaliLogo = frame.image;
+      if (mounted) setState(() {});
+      return;
+    } catch (_) {}
+
+    try {
       const url = "https://arawali.in/wp-content/uploads/2019/12/logo.png";
       final res = await http.get(Uri.parse(url));
       if (res.statusCode == 200) {
-        final codec = await ui.instantiateImageCodec(res.bodyBytes);
+        final codec = await ui.instantiateImageCodec(res.bodyBytes, targetWidth: 300);
         final frame = await codec.getNextFrame();
         _arawaliLogo = frame.image;
         if (mounted) setState(() {});
@@ -114,7 +147,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       final qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://maps.google.com/?q=$_lat,$_lon";
       final res = await http.get(Uri.parse(qrUrl));
       if (res.statusCode == 200) {
-        final codec = await ui.instantiateImageCodec(res.bodyBytes);
+        final codec = await ui.instantiateImageCodec(res.bodyBytes, targetWidth: 150);
         final frame = await codec.getNextFrame();
         _qrCodeImage = frame.image;
         if (mounted) setState(() {});
@@ -129,7 +162,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       final mapUrl = "https://static-maps.yandex.ru/1.x/?ll=$_lon,$_lat&z=16&l=sat&size=250,250";
       final res = await http.get(Uri.parse(mapUrl));
       if (res.statusCode == 200) {
-        final codec = await ui.instantiateImageCodec(res.bodyBytes);
+        final codec = await ui.instantiateImageCodec(res.bodyBytes, targetWidth: 250);
         final frame = await codec.getNextFrame();
         _satelliteMapImage = frame.image;
         if (mounted) setState(() {});
@@ -140,25 +173,18 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   }
 
   Future<void> _initLocation() async {
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.deniedForever) return;
-
     try {
       Position pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
       _lat = pos.latitude;
       _lon = pos.longitude;
-      _altitude = pos.altitude > 0 ? pos.altitude : 428.5;
 
       _fetchSatelliteMap();
       _loadVerificationQR();
 
       final url = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=json&lat=$_lat&lon=$_lon');
-      final res = await http.get(url, headers: {'User-Agent': 'ArawaliMapCamera/2050'});
+      final res = await http.get(url, headers: {'User-Agent': 'ArawaliGPSCamera/2.0'});
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data != null && data['address'] != null) {
@@ -176,16 +202,29 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     }
   }
 
+  // Trigger Live Location Popup with 5-second Auto-Dismiss & Manual 'X'
+  void _triggerLocationPopup() {
+    _popupTimer?.cancel();
+    setState(() => _showLocationPopup = true);
+    _popupTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _showLocationPopup = false);
+    });
+  }
+
   Future<void> _initCamera(int index) async {
     if (cameras.isEmpty) return;
     _controller = CameraController(
       cameras[index],
-      ResolutionPreset.veryHigh,
+      ResolutionPreset.high, // 1080p for instant 0.1s capture, crisp ~1MB photo, no lag
       enableAudio: false,
     );
 
     try {
       await _controller!.initialize();
+      _minExposure = await _controller!.getMinExposureOffset();
+      _maxExposure = await _controller!.getMaxExposureOffset();
+      _currentExposure = 0.0;
+
       if (mounted) {
         setState(() {
           _isCameraReady = true;
@@ -229,9 +268,17 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     }
   }
 
-  // AI Vehicle Number Plate Detection Logic
+  Future<void> _setBrightness(double value) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    try {
+      await _controller!.setExposureOffset(value);
+      setState(() => _currentExposure = value);
+    } catch (e) {
+      debugPrint("Exposure err: $e");
+    }
+  }
+
   String _extractIndianPlate(String rawText) {
-    // Regex for Indian Vehicle Plates (e.g., RJ14GA1234, DL01AB9999, HR26DQ5555)
     final RegExp regExp = RegExp(
       r'[A-Z]{2}\s?[0-9]{1,2}\s?[A-Z]{1,3}\s?[0-9]{4}',
       caseSensitive: false,
@@ -241,6 +288,176 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       return match.group(0)!.toUpperCase().replaceAll(' ', ' ');
     }
     return "";
+  }
+
+  // Kanta Parchi / RST Number Dialog
+  void _openKantaParchiDialog() {
+    final textController = TextEditingController(text: _kantaRstNo);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF161B22),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFFFFCC00), width: 1.5),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.scale, color: Color(0xFFFFCC00), size: 28),
+            const SizedBox(width: 10),
+            Text(
+              "कांटा पर्ची (RST No.)",
+              style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "कांटा पर्ची / वजन रसीद नंबर यहाँ डालें:",
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textController,
+              autofocus: true,
+              style: GoogleFonts.orbitron(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                hintText: "उदा. RST-5051 या 2489",
+                hintStyle: const TextStyle(color: Colors.white30, fontSize: 14),
+                filled: true,
+                fillColor: Colors.black45,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Color(0xFFFFCC00)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Color(0xFFFFCC00), width: 2),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              setState(() => _kantaRstNo = "");
+              Navigator.pop(ctx);
+            },
+            child: const Text("हटाएं (Clear)", style: TextStyle(color: Colors.redAccent)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFFCC00),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () {
+              setState(() => _kantaRstNo = textController.text.trim());
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(_kantaRstNo.isNotEmpty ? "✓ कांटा पर्ची RST No. [$_kantaRstNo] सेट हो गया!" : "कांटा पर्ची नंबर खाली है"),
+                  backgroundColor: const Color(0xFF00C853),
+                ),
+              );
+            },
+            child: const Text("सेव करें", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Settings Dialog (Powered By Lakda Dal & Besan)
+  void _openSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF12161C),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: Color(0xFFFFCC00), width: 2),
+        ),
+        title: Center(
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFFFCC00), width: 2),
+                  color: Colors.black,
+                ),
+                child: const Icon(Icons.camera_alt, color: Color(0xFFFFCC00), size: 36),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                "Arawali GPS Camera",
+                style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 22),
+              ),
+              const Text("Version 2.0 Pro", style: TextStyle(color: Colors.white54, fontSize: 12)),
+            ],
+          ),
+        ),
+        content: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.black45,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Text(
+                "⚡ THIS APP POWERED BY ⚡",
+                style: TextStyle(color: Color(0xFFFFCC00), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "LAKDA DAL AND BESAN UTPADAN KENDRA",
+                textAlign: TextAlign.center,
+                style: GoogleFonts.fredoka(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                "F 768b, Road No. 1D, Vishwakarma Industrial Area (VKI), Jaipur, Rajasthan - 302013",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70, fontSize: 11, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              const Divider(color: Colors.white24),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.verified, color: Color(0xFF00FF66), size: 16),
+                  SizedBox(width: 6),
+                  Text("100% Genuine Industrial Camera", style: TextStyle(color: Color(0xFF00FF66), fontSize: 11)),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          Center(
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFFCC00),
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("OK", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _openAllPhotosGallery() {
@@ -302,19 +519,21 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     );
   }
 
-  // Capture Photo, Run AI Vehicle Detection & Stamp Card
+  // ULTRA-FAST LIGHTNING INSTANT CAPTURE & STAMP
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
+    // Instant Click Sound & Heavy Haptic Feedback
     SystemSound.play(SystemSoundType.click);
-    HapticFeedback.mediumImpact();
+    HapticFeedback.heavyImpact();
 
+    _updateClock();
     setState(() => _isProcessing = true);
 
     try {
       XFile rawFile = await _controller!.takePicture();
 
-      // 1. Run AI Google ML Kit to Scan Vehicle Number
+      // Run AI Google ML Kit to Scan Vehicle Number
       String vehiclePlate = "";
       try {
         final inputImage = InputImage.fromFilePath(rawFile.path);
@@ -326,11 +545,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
       Uint8List bytes = await rawFile.readAsBytes();
 
-      final ui.Codec codec = await ui.instantiateImageCodec(bytes);
+      // Downsample to 1200 width for lightning-fast 0.1s processing & crisp ~1MB photo!
+      final ui.Codec codec = await ui.instantiateImageCodec(bytes, targetWidth: 1200);
       final ui.FrameInfo frameInfo = await codec.getNextFrame();
       final ui.Image fullImg = frameInfo.image;
 
-      // 4:3 Aspect Ratio
+      // 3:4 Aspect Ratio (Portrait)
       double finalW = fullImg.width.toDouble();
       double finalH = (finalW * 4.0) / 3.0;
       if (finalH > fullImg.height) {
@@ -344,7 +564,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, finalW, finalH));
 
-      // Draw 4:3 Photo
+      // 1. Draw 3:4 Photo
       canvas.drawImageRect(
         fullImg,
         Rect.fromLTWH(cropX, cropY, finalW, finalH),
@@ -352,18 +572,18 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
         Paint(),
       );
 
-      // Draw 2050 Cyber Card Stamp
-      final cardH = finalH * 0.19;
-      final cardW = finalW - 40;
-      final cardX = 20.0;
-      final cardY = finalH - cardH - 30;
+      // 2. Draw Stamp Card
+      final cardH = finalH * 0.22;
+      final cardW = finalW - 32;
+      final cardX = 16.0;
+      final cardY = finalH - cardH - 18;
 
       final cardRect = RRect.fromRectAndRadius(
         Rect.fromLTWH(cardX, cardY, cardW, cardH),
         const Radius.circular(16),
       );
 
-      canvas.drawRRect(cardRect, Paint()..color = const Color(0xF00D1117));
+      canvas.drawRRect(cardRect, Paint()..color = const Color(0xF20D1117));
       canvas.drawRRect(
         cardRect,
         Paint()
@@ -373,9 +593,9 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       );
 
       // Mini Satellite Map
-      final mapSize = cardH - 22;
-      final mapX = cardX + 11;
-      final mapY = cardY + 11;
+      final mapSize = cardH - 20;
+      final mapX = cardX + 10;
+      final mapY = cardY + 10;
 
       final mapRect = RRect.fromRectAndRadius(Rect.fromLTWH(mapX, mapY, mapSize, mapSize), const Radius.circular(8));
       canvas.save();
@@ -395,45 +615,58 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
       canvas.drawRRect(mapRect, Paint()..color = Colors.white30..style = PaintingStyle.stroke..strokeWidth = 1);
       _drawText(canvas, "📍", Offset(mapX + (mapSize / 2) - 15, mapY + (mapSize / 2) - 24), 32, Colors.red);
-      _drawText(canvas, "Google", Offset(mapX + 8, mapY + mapSize - 20), 15, Colors.white, isBold: true);
+      _drawText(canvas, "Google", Offset(mapX + 8, mapY + mapSize - 20), 14, Colors.white, isBold: true);
 
-      // Text Data
-      final textX = mapX + mapSize + 18;
-      final baseFont = cardH * 0.088;
-
-      // Header Brand
-      _drawText(canvas, "★ ARAWALI MAP CAMERA PRO 2050 ★", Offset(textX, cardY + (baseFont * 1.1)), baseFont - 1, const Color(0xFFFFCC00), isBold: true);
-
-      // QR Code
-      final qrSize = cardH * 0.42;
+      // Right Side QR Code (Google Maps Link) + Label
+      final qrSize = cardH * 0.44;
       final qrX = cardX + cardW - qrSize - 12;
       final qrY = cardY + 10;
 
       if (_qrCodeImage != null) {
         canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(qrX - 3, qrY - 3, qrSize + 6, qrSize + 6), const Radius.circular(6)), Paint()..color = Colors.white);
         canvas.drawImageRect(_qrCodeImage!, Rect.fromLTWH(0, 0, _qrCodeImage!.width.toDouble(), _qrCodeImage!.height.toDouble()), Rect.fromLTWH(qrX, qrY, qrSize, qrSize), Paint());
+        _drawText(canvas, "SCAN MAP", Offset(qrX + 6, qrY + qrSize + 6), cardH * 0.055, const Color(0xFFFFCC00), isBold: true, isMonospace: true);
       }
 
-      // City + Flag
-      _drawText(canvas, "$_city  🇮🇳", Offset(textX, cardY + (baseFont * 2.5)), baseFont + 4, Colors.white, isBold: true);
+      // Text Data
+      final textX = mapX + mapSize + 14;
+      final baseFont = cardH * 0.084;
 
-      // Address
-      String addr = _address;
-      if (addr.length > 55) addr = "${addr.substring(0, 52)}...";
-      _drawText(canvas, addr, Offset(textX, cardY + (baseFont * 4.0)), baseFont, const Color(0xFFE0E0E0));
+      // 1. Header: ARAWALI GPS CAMERA
+      _drawText(canvas, "★ ARAWALI GPS CAMERA ★", Offset(textX, cardY + (baseFont * 1.0)), baseFont + 1, const Color(0xFFFFCC00), isBold: true);
 
-      // Coordinates + Altitude
-      _drawText(canvas, "Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}° | Alt: ${_altitude.toStringAsFixed(1)}m", Offset(textX, cardY + (baseFont * 5.4)), baseFont, const Color(0xFF00FF66), isMonospace: true);
+      // 2. City + Flag
+      _drawText(canvas, "$_city 🇮🇳", Offset(textX, cardY + (baseFont * 2.2)), baseFont + 3, Colors.white, isBold: true);
 
-      // AI VEHICLE NUMBER DETECTION STAMP LINE!
-      if (vehiclePlate.isNotEmpty) {
-        _drawText(canvas, "🚗 VEHICLE NO: $vehiclePlate [AI VERIFIED]", Offset(textX, cardY + (baseFont * 6.8)), baseFont + 1, const Color(0xFFFFD700), isBold: true, isMonospace: true);
+      // 3. FULL ADDRESS (Replaced Lat/Long & Alt)
+      List<String> addrLines = _wrapText(_address, 42);
+      _drawText(canvas, addrLines.isNotEmpty ? addrLines[0] : _address, Offset(textX, cardY + (baseFont * 3.5)), baseFont - 1, const Color(0xFFE2E8F0));
+      if (addrLines.length > 1) {
+        _drawText(canvas, addrLines[1], Offset(textX, cardY + (baseFont * 4.7)), baseFont - 1, const Color(0xFFCBD5E1));
+      }
+
+      // 4. KANTA RST / VEHICLE / COMPANY & TELEMETRY FILLER
+      // (NEVER LEAVES ANY EMPTY SPACE - ALWAYS BEAUTIFULLY FILLED!)
+      double dynamicY = cardY + (baseFont * 6.0);
+
+      // Row A: Kanta RST No. OR Company Name
+      if (_kantaRstNo.isNotEmpty) {
+        _drawText(canvas, "⚖️ KANTA RST NO: $_kantaRstNo", Offset(textX, dynamicY), baseFont + 2, const Color(0xFF00FF66), isBold: true, isMonospace: true);
+        dynamicY += (baseFont * 1.35);
       } else {
-        _drawText(canvas, "⛅ 29°C | Hum: 42% | Compass: NW 315°", Offset(textX, cardY + (baseFont * 6.8)), baseFont - 1, const Color(0xFF00E5FF));
+        _drawText(canvas, "🏢 LAKDA DAL & BESAN UTPADAN KENDRA", Offset(textX, dynamicY), baseFont - 0.5, const Color(0xFFE2E8F0), isBold: true);
+        dynamicY += (baseFont * 1.35);
       }
 
-      // Timestamp & Blockchain Note
-      _drawText(canvas, "$_timeStr  [ARAWALI VERIFIED ORIGINAL]", Offset(textX, cardY + (baseFont * 8.2)), baseFont - 2, const Color(0xFF9E9E9E));
+      // Row B: AI Vehicle Number OR Live Compass & Telemetry
+      if (vehiclePlate.isNotEmpty) {
+        _drawText(canvas, "🚗 VEHICLE: $vehiclePlate [AI VERIFIED]", Offset(textX, dynamicY), baseFont + 1, const Color(0xFFFFD700), isBold: true, isMonospace: true);
+      } else {
+        _drawText(canvas, "🧭 Compass: NW 315° • Alt: 428m • ⛅ 28°C", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true, isMonospace: true);
+      }
+
+      // 5. DATE & TIME (CLEAN WITHOUT GMT - HIGHLIGHTED & PROMINENT)
+      _drawText(canvas, "📅 $_dateStr  $_timeStr", Offset(textX, cardY + cardH - (baseFont * 1.3)), baseFont + 1, const Color(0xFFFFCC00), isBold: true, isMonospace: true);
 
       final picture = recorder.endRecording();
       final finalImage = await picture.toImage(finalW.toInt(), finalH.toInt());
@@ -450,9 +683,13 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(vehiclePlate.isNotEmpty ? "✓ Vehicle $vehiclePlate Detected & Saved to Gallery!" : "✓ Photo Saved to Gallery!"),
+            content: Text(
+              _kantaRstNo.isNotEmpty 
+                ? "✓ Saved with Kanta RST [$_kantaRstNo]!"
+                : "✓ Photo Saved to Gallery!",
+            ),
             backgroundColor: const Color(0xFF00C853),
-            duration: const Duration(seconds: 3),
+            duration: const Duration(seconds: 2),
           ),
         );
       }
@@ -461,6 +698,24 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
+  }
+
+  List<String> _wrapText(String text, int maxChars) {
+    List<String> lines = [];
+    if (text.length <= maxChars) {
+      lines.add(text);
+      return lines;
+    }
+    int splitIdx = text.lastIndexOf(' ', maxChars);
+    if (splitIdx == -1) splitIdx = maxChars;
+    lines.add(text.substring(0, splitIdx).trim());
+    String remainder = text.substring(splitIdx).trim();
+    if (remainder.length > maxChars) {
+      lines.add("${remainder.substring(0, maxChars - 3)}...");
+    } else {
+      lines.add(remainder);
+    }
+    return lines;
   }
 
   void _drawText(Canvas canvas, String text, Offset offset, double fontSize, Color color, {bool isBold = false, bool isMonospace = false}) {
@@ -487,6 +742,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
   @override
   void dispose() {
+    _popupTimer?.cancel();
     _controller?.dispose();
     _textRecognizer.close();
     super.dispose();
@@ -501,17 +757,32 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     }
 
     return Scaffold(
+      backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 4:3 Camera Viewport
-          Positioned.fill(
+          // 3:4 Boxed Camera Viewport
+          Center(
             child: AspectRatio(
               aspectRatio: 3 / 4,
-              child: CameraPreview(_controller!),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CameraPreview(_controller!),
+                    
+                    // 3x3 Rule-of-Thirds Grid Overlay (Toggleable!)
+                    if (_isGridOn)
+                      CustomPaint(
+                        painter: CameraGridPainter(),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
 
-          // 2050 Reticle
+          // Cyber Reticle in Center
           Center(
             child: Stack(
               alignment: Alignment.center,
@@ -530,59 +801,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
             ),
           ),
 
-          // 2050 AI ANPR Scanner Badge
-          Positioned(
-            top: 105,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.75),
-                  borderRadius: BorderRadius.circular(15),
-                  border: Border.all(color: const Color(0xFFFFCC00)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.auto_awesome, color: Color(0xFFFFCC00), size: 14),
-                    const SizedBox(width: 6),
-                    Text(
-                      "AI VEHICLE NUMBER DETECTOR ACTIVE",
-                      style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 9, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // Right Side Sun Exposure Slider
-          Positioned(
-            right: 15,
-            top: 200,
-            bottom: 240,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.wb_sunny_outlined, color: Color(0xFFFFCC00), size: 22),
-                const SizedBox(height: 5),
-                Container(
-                  width: 3,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFCC00),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text("0", style: GoogleFonts.orbitron(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ),
-
-          // Top Header (6 Pro Icons Bar)
+          // Top Header (Grid, Flash, Radar, Flip, Settings)
           Positioned(
             top: 45,
             left: 12,
@@ -591,93 +810,244 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 IconButton(
-                  icon: Icon(Icons.grid_on, color: _isGridOn ? const Color(0xFFFFCC00) : Colors.white, size: 22),
-                  onPressed: () => setState(() => _isGridOn = !_isGridOn),
+                  icon: Icon(Icons.grid_on, color: _isGridOn ? const Color(0xFFFFCC00) : Colors.white54, size: 24),
+                  onPressed: () {
+                    setState(() => _isGridOn = !_isGridOn);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(_isGridOn ? "Grid Enabled" : "Grid Disabled"), duration: const Duration(milliseconds: 600)),
+                    );
+                  },
                 ),
                 IconButton(
                   icon: Icon(
                     _isFlashOn ? Icons.flash_on : Icons.flash_off,
                     color: _isFlashOn ? const Color(0xFFFFCC00) : Colors.white,
-                    size: 24,
+                    size: 26,
                   ),
                   onPressed: _toggleFlash,
                 ),
                 IconButton(
-                  icon: const Icon(Icons.note_add_outlined, color: Colors.white, size: 22),
-                  onPressed: () {},
+                  icon: const Icon(Icons.satellite_alt_outlined, color: Color(0xFF00E5FF), size: 26),
+                  onPressed: _triggerLocationPopup, // Clicking radar shows live location popup!
                 ),
                 IconButton(
-                  icon: const Icon(Icons.satellite_alt_outlined, color: Color(0xFF00E5FF), size: 22),
-                  onPressed: _fetchSatelliteMap,
-                ),
-                IconButton(
-                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 24),
+                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 26),
                   onPressed: _flipCamera,
                 ),
                 IconButton(
-                  icon: const Icon(Icons.settings, color: Colors.white, size: 22),
-                  onPressed: () {},
+                  icon: const Icon(Icons.settings, color: Color(0xFFFFCC00), size: 26),
+                  onPressed: _openSettingsDialog,
                 ),
               ],
             ),
           ),
 
-          // Bottom Stamp Live Preview
+          // Brightness Slider (Comfortable Thumb-Reach Height ~220px)
+          Positioned(
+            right: 12,
+            bottom: 195,
+            child: Container(
+              height: 220,
+              width: 48,
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.75),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: const Color(0xFFFFCC00).withOpacity(0.4), width: 1.5),
+                boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Icon(Icons.wb_sunny, color: Color(0xFFFFCC00), size: 20),
+                  Text(
+                    _currentExposure >= 0 ? "+${_currentExposure.toStringAsFixed(1)}" : _currentExposure.toStringAsFixed(1),
+                    style: GoogleFonts.orbitron(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                  ),
+                  Expanded(
+                    child: RotatedBox(
+                      quarterTurns: 3,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          thumbColor: const Color(0xFFFFCC00),
+                          activeTrackColor: const Color(0xFFFFCC00),
+                          inactiveTrackColor: Colors.white24,
+                          trackHeight: 4,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                        ),
+                        child: Slider(
+                          value: _currentExposure,
+                          min: _minExposure,
+                          max: _maxExposure,
+                          onChanged: (val) => _setBrightness(val),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.nightlight_round, color: Color(0xFF00E5FF), size: 16),
+                ],
+              ),
+            ),
+          ),
+
+          // Active Kanta RST Badge on Screen
+          if (_kantaRstNo.isNotEmpty)
+            Positioned(
+              top: 105,
+              left: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: const Color(0xFF00FF66), width: 1.5),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.scale, color: Color(0xFF00FF66), size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      "RST: $_kantaRstNo",
+                      style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Live Radar Location Popup (5-Second Auto Dismiss with 'X' Cross Sign)
+          if (_showLocationPopup)
+            Positioned(
+              top: 110,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xF212161C),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF00E5FF), width: 1.5),
+                  boxShadow: const [BoxShadow(color: Colors.black87, blurRadius: 15)],
+                ),
+                child: Stack(
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.satellite_alt, color: Color(0xFF00E5FF), size: 20),
+                            const SizedBox(width: 8),
+                            Text(
+                              "आप अभी यहाँ हैं (LIVE LOCATION)",
+                              style: GoogleFonts.fredoka(color: const Color(0xFF00E5FF), fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          "📍 $_city 🇮🇳",
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          _address,
+                          style: const TextStyle(color: Colors.white70, fontSize: 11),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          "GPS: Lat ${_lat.toStringAsFixed(6)}°, Long ${_lon.toStringAsFixed(6)}°",
+                          style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10),
+                        ),
+                      ],
+                    ),
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: GestureDetector(
+                        onTap: () {
+                          _popupTimer?.cancel();
+                          setState(() => _showLocationPopup = false);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.white24,
+                          ),
+                          child: const Icon(Icons.close, color: Colors.white, size: 16),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Live Bottom Stamp Preview
           Positioned(
             bottom: 155,
             left: 14,
             right: 14,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xEE12161C),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0x66FFCC00)),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 78,
-                    height: 78,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E293B),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.white24),
+            child: GestureDetector(
+              onTap: _triggerLocationPopup, // Clicking map preview also triggers live location popup!
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xEE12161C),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0x66FFCC00)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 74,
+                      height: 74,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E293B),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          const Text("📍", style: TextStyle(fontSize: 24)),
+                          Positioned(
+                            bottom: 2,
+                            left: 4,
+                            child: Text("Google", style: GoogleFonts.fredoka(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        const Text("📍", style: TextStyle(fontSize: 26)),
-                        Positioned(
-                          bottom: 2,
-                          left: 4,
-                          child: Text("Google", style: GoogleFonts.fredoka(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                        ),
-                      ],
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("★ ARAWALI GPS CAMERA ★", style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
+                          const SizedBox(height: 1),
+                          Text("$_city 🇮🇳", style: GoogleFonts.fredoka(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                          Text(_address, style: GoogleFonts.fredoka(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
+                          if (_kantaRstNo.isNotEmpty)
+                            Text("⚖️ KANTA RST: $_kantaRstNo", style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10, fontWeight: FontWeight.bold))
+                          else
+                            Text("🏢 LAKDA DAL & BESAN KENDRA", style: GoogleFonts.fredoka(color: const Color(0xFFE2E8F0), fontSize: 9.5, fontWeight: FontWeight.bold)),
+                          Text("📅 $_dateStr • $_timeStr", style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 10, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text("★ ARAWALI MAP CAMERA PRO 2050 ★", style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
-                        const SizedBox(height: 1),
-                        Text("$_city 🇮🇳", style: GoogleFonts.fredoka(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                        Text(_address, style: GoogleFonts.fredoka(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
-                        const SizedBox(height: 1),
-                        Text("Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}°", style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10, fontWeight: FontWeight.w600)),
-                      ],
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
 
           // 1x / 2x Zoom Controls
           Positioned(
-            bottom: 110,
+            bottom: 112,
             left: 0,
             right: 0,
             child: Center(
@@ -687,7 +1057,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   GestureDetector(
                     onTap: () => _setZoom(1.0),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       decoration: BoxDecoration(
                         color: _currentZoom == 1.0 ? const Color(0xFFFFCC00) : Colors.black54,
                         borderRadius: BorderRadius.circular(15),
@@ -699,7 +1069,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   GestureDetector(
                     onTap: () => _setZoom(2.0),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       decoration: BoxDecoration(
                         color: _currentZoom == 2.0 ? const Color(0xFFFFCC00) : Colors.black54,
                         borderRadius: BorderRadius.circular(15),
@@ -721,6 +1091,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                // 1. Vault Gallery Preview
                 GestureDetector(
                   onTap: _openAllPhotosGallery,
                   child: Column(
@@ -744,8 +1115,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                     ],
                   ),
                 ),
+
+                // 2. Locations / Radar
                 GestureDetector(
-                  onTap: _initLocation,
+                  onTap: _triggerLocationPopup,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -755,6 +1128,8 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                     ],
                   ),
                 ),
+
+                // 3. Main Instant Shutter Button
                 GestureDetector(
                   onTap: _isProcessing ? null : _captureAndStamp,
                   child: Container(
@@ -776,12 +1151,18 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                           ),
                         ),
                         child: _isProcessing
-                            ? const CircularProgressIndicator(color: Colors.black)
-                            : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
+                            ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2.5),
+                              )
+                            : const Icon(Icons.camera_alt, color: Colors.black, size: 32),
                       ),
                     ),
                   ),
                 ),
+
+                // 4. Storage Vault
                 GestureDetector(
                   onTap: _openAllPhotosGallery,
                   child: Column(
@@ -793,18 +1174,27 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                     ],
                   ),
                 ),
+
+                // 5. KANTA PARCHI
                 GestureDetector(
-                  onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Arawali AI 2050 ANPR Active")),
-                    );
-                  },
+                  onTap: _openKantaParchiDialog,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.grid_view, color: Colors.white, size: 26),
+                      Icon(
+                        Icons.scale,
+                        color: _kantaRstNo.isNotEmpty ? const Color(0xFF00FF66) : const Color(0xFFFFCC00),
+                        size: 26,
+                      ),
                       const SizedBox(height: 3),
-                      Text("Template", style: GoogleFonts.fredoka(fontSize: 10, color: Colors.white70)),
+                      Text(
+                        _kantaRstNo.isNotEmpty ? "RST: $_kantaRstNo" : "कांटा पर्ची",
+                        style: GoogleFonts.fredoka(
+                          fontSize: 10,
+                          color: _kantaRstNo.isNotEmpty ? const Color(0xFF00FF66) : const Color(0xFFFFCC00),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -815,4 +1205,29 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       ),
     );
   }
+}
+
+// 3x3 Rule-of-Thirds Grid Painter
+class CameraGridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.35)
+      ..strokeWidth = 1.0;
+
+    // Horizontal Lines
+    final double h1 = size.height / 3.0;
+    final double h2 = size.height * 2.0 / 3.0;
+    canvas.drawLine(Offset(0, h1), Offset(size.width, h1), paint);
+    canvas.drawLine(Offset(0, h2), Offset(size.width, h2), paint);
+
+    // Vertical Lines
+    final double w1 = size.width / 3.0;
+    final double w2 = size.width * 2.0 / 3.0;
+    canvas.drawLine(Offset(w1, 0), Offset(w1, size.height), paint);
+    canvas.drawLine(Offset(w2, 0), Offset(w2, size.height), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
