@@ -10,6 +10,7 @@ import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'dart:convert';
+import 'package:google_fonts/google_fonts.dart';
 
 List<CameraDescription> cameras = [];
 
@@ -34,6 +35,7 @@ class ArawaliCameraApp extends StatelessWidget {
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: Colors.black,
         primaryColor: const Color(0xFFFFCC00),
+        textTheme: GoogleFonts.fredokaTextTheme(ThemeData.dark().textTheme),
       ),
       home: const CyberCameraScreen(),
     );
@@ -254,7 +256,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       MaterialPageRoute(
         builder: (_) => Scaffold(
           appBar: AppBar(
-            title: Text("Arawali Vault (${_allCapturedPhotos.length})", style: const TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
+            title: Text(
+              "Arawali Vault (${_allCapturedPhotos.length})",
+              style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold),
+            ),
             backgroundColor: Colors.black,
           ),
           body: GridView.builder(
@@ -462,12 +467,17 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     final textPainter = TextPainter(
       text: TextSpan(
         text: text,
-        style: TextStyle(
-          color: color,
-          fontSize: fontSize,
-          fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
-          fontFamily: isMonospace ? 'monospace' : null,
-        ),
+        style: isMonospace
+            ? GoogleFonts.orbitron(
+                color: color,
+                fontSize: fontSize,
+                fontWeight: isBold ? FontWeight.bold : FontWeight.w600,
+              )
+            : GoogleFonts.fredoka(
+                color: color,
+                fontSize: fontSize,
+                fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
+              ),
       ),
       textDirection: ui.TextDirection.ltr,
     );
@@ -533,14 +543,14 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(color: const Color(0xFFFFCC00)),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.auto_awesome, color: Color(0xFFFFCC00), size: 14),
-                    SizedBox(width: 6),
+                    const Icon(Icons.auto_awesome, color: Color(0xFFFFCC00), size: 14),
+                    const SizedBox(width: 6),
                     Text(
                       "AI VEHICLE NUMBER DETECTOR ACTIVE",
-                      style: TextStyle(color: Color(0xFFFFCC00), fontSize: 10, fontFamily: 'monospace', fontWeight: FontWeight.bold),
+                      style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 9, fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
@@ -567,7 +577,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   ),
                 ),
                 const SizedBox(height: 5),
-                const Text("0", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                Text("0", style: GoogleFonts.orbitron(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
               ],
             ),
           ),
@@ -636,9 +646,13 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                     ),
                     child: Stack(
                       alignment: Alignment.center,
-                      children: const [
-                        Text("📍", style: TextStyle(fontSize: 26)),
-                        Positioned(bottom: 2, left: 4, child: Text("Google", style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))),
+                      children: [
+                        const Text("📍", style: TextStyle(fontSize: 26)),
+                        Positioned(
+                          bottom: 2,
+                          left: 4,
+                          child: Text("Google", style: GoogleFonts.fredoka(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                        ),
                       ],
                     ),
                   ),
@@ -647,12 +661,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text("★ ARAWALI MAP CAMERA PRO 2050 ★", style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
+                        Text("★ ARAWALI MAP CAMERA PRO 2050 ★", style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
                         const SizedBox(height: 1),
-                        Text("$_city 🇮🇳", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                        Text(_address, style: const TextStyle(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
+                        Text("$_city 🇮🇳", style: GoogleFonts.fredoka(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                        Text(_address, style: GoogleFonts.fredoka(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
                         const SizedBox(height: 1),
-                        Text("Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}°", style: const TextStyle(color: Color(0xFF00FF66), fontSize: 10, fontFamily: 'monospace')),
+                        Text("Lat ${_lat.toStringAsFixed(6)}° Long ${_lon.toStringAsFixed(6)}°", style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10, fontWeight: FontWeight.w600)),
                       ],
                     ),
                   ),
@@ -678,7 +692,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                         color: _currentZoom == 1.0 ? const Color(0xFFFFCC00) : Colors.black54,
                         borderRadius: BorderRadius.circular(15),
                       ),
-                      child: Text("1x", style: TextStyle(color: _currentZoom == 1.0 ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                      child: Text("1x", style: GoogleFonts.fredoka(color: _currentZoom == 1.0 ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -690,7 +704,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                         color: _currentZoom == 2.0 ? const Color(0xFFFFCC00) : Colors.black54,
                         borderRadius: BorderRadius.circular(15),
                       ),
-                      child: Text("2x", style: TextStyle(color: _currentZoom == 2.0 ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                      child: Text("2x", style: GoogleFonts.fredoka(color: _currentZoom == 2.0 ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                     ),
                   ),
                 ],
@@ -726,18 +740,18 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                             : const Icon(Icons.photo_library, color: Color(0xFFFFCC00), size: 22),
                       ),
                       const SizedBox(height: 3),
-                      const Text("Preview", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                      Text("Preview", style: GoogleFonts.fredoka(fontSize: 10, color: Colors.white70)),
                     ],
                   ),
                 ),
                 GestureDetector(
                   onTap: _initLocation,
-                  child: const Column(
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.location_on_outlined, color: Colors.white, size: 26),
-                      SizedBox(height: 3),
-                      Text("Locations", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                      const Icon(Icons.location_on_outlined, color: Colors.white, size: 26),
+                      const SizedBox(height: 3),
+                      Text("Locations", style: GoogleFonts.fredoka(fontSize: 10, color: Colors.white70)),
                     ],
                   ),
                 ),
@@ -770,12 +784,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                 ),
                 GestureDetector(
                   onTap: _openAllPhotosGallery,
-                  child: const Column(
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.folder_open, color: Colors.white, size: 26),
-                      SizedBox(height: 3),
-                      Text("Storage", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                      const Icon(Icons.folder_open, color: Colors.white, size: 26),
+                      const SizedBox(height: 3),
+                      Text("Storage", style: GoogleFonts.fredoka(fontSize: 10, color: Colors.white70)),
                     ],
                   ),
                 ),
@@ -785,12 +799,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                       const SnackBar(content: Text("Arawali AI 2050 ANPR Active")),
                     );
                   },
-                  child: const Column(
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.grid_view, color: Colors.white, size: 26),
-                      SizedBox(height: 3),
-                      Text("Template", style: TextStyle(fontSize: 10, color: Colors.white70)),
+                      const Icon(Icons.grid_view, color: Colors.white, size: 26),
+                      const SizedBox(height: 3),
+                      Text("Template", style: GoogleFonts.fredoka(fontSize: 10, color: Colors.white70)),
                     ],
                   ),
                 ),
