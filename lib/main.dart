@@ -268,6 +268,24 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     }
   }
 
+  static const MethodChannel _soundChannel = MethodChannel('arawali_gps_camera/sound');
+
+  void _playClickSound() {
+    HapticFeedback.lightImpact();
+    try {
+      SystemSound.play(SystemSoundType.click);
+      _soundChannel.invokeMethod('playClick');
+    } catch (_) {}
+  }
+
+  void _playShutterSound() {
+    HapticFeedback.heavyImpact();
+    try {
+      SystemSound.play(SystemSoundType.click);
+      _soundChannel.invokeMethod('playShutter');
+    } catch (_) {}
+  }
+
   Future<void> _setBrightness(double value) async {
     if (_controller == null || !_controller!.value.isInitialized) return;
     try {
@@ -278,15 +296,131 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     }
   }
 
-  String _extractIndianPlate(String rawText) {
-    final RegExp regExp = RegExp(
-      r'[A-Z]{2}\s?[0-9]{1,2}\s?[A-Z]{1,3}\s?[0-9]{4}',
-      caseSensitive: false,
-    );
-    final match = regExp.firstMatch(rawText);
-    if (match != null) {
-      return match.group(0)!.toUpperCase().replaceAll(' ', ' ');
+  static const Set<String> _indianStates = {
+    'AN', 'AP', 'AR', 'AS', 'BR', 'CG', 'CH', 'DD', 'DL', 'DN',
+    'GA', 'GJ', 'HP', 'HR', 'JH', 'JK', 'KA', 'KL', 'LA', 'LD',
+    'MH', 'ML', 'MN', 'MP', 'MZ', 'NL', 'OD', 'OR', 'PB', 'PY',
+    'RJ', 'SK', 'TN', 'TR', 'TS', 'UK', 'UP', 'UT', 'WB', 'BH'
+  };
+
+  String? _tryParsePlate(String raw) {
+    String t = raw.toUpperCase()
+        .replaceAll('IND', ' ')
+        .replaceAll(RegExp(r'[^A-Z0-9]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    if (t.isEmpty) return null;
+
+    // Pattern 1: With spaces e.g. RJ 07 GC 0138, TN 88 F 4089, DL 1C AA 1111, RJ 14 2026
+    for (final st in _indianStates) {
+      final reg1 = RegExp(r'\b' + st + r'\s*([0-9]{1,2}[A-Z]?)\s*([A-Z]{0,3})\s*([0-9OQD]{1,4})\b');
+      final m1 = reg1.firstMatch(t);
+      if (m1 != null) {
+        String dist = m1.group(1)!;
+        String ser = m1.group(2) ?? '';
+        String num = m1.group(3)!
+            .replaceAll('O', '0')
+            .replaceAll('Q', '0')
+            .replaceAll('D', '0');
+        
+        List<String> parts = [st, dist];
+        if (ser.isNotEmpty) parts.add(ser);
+        parts.add(num);
+        return parts.join(' ');
+      }
     }
+
+    // Pattern 2: Without spaces e.g. RJ07GC0138, RJ07GCQ138, TN88F4089, DL1CAA1111
+    String compressed = t.replaceAll(' ', '');
+    for (final st in _indianStates) {
+      final reg2 = RegExp(r'\b' + st + r'([0-9]{1,2}[A-Z]?)([A-Z]{0,3})([0-9OQD]{1,4})\b');
+      final m2 = reg2.firstMatch(compressed);
+      if (m2 != null) {
+        String dist = m2.group(1)!;
+        String ser = m2.group(2) ?? '';
+        String num = m2.group(3)!
+            .replaceAll('O', '0')
+            .replaceAll('Q', '0')
+            .replaceAll('D', '0');
+
+        List<String> parts = [st, dist];
+        if (ser.isNotEmpty) parts.add(ser);
+        parts.add(num);
+        return parts.join(' ');
+      }
+    }
+
+    return null;
+  }
+
+  String _extractIndianPlateFromRecognizedText(
+    RecognizedText recognizedText,
+    double cropW,
+    double cropH,
+  ) {
+    final Offset cropCenter = Offset(cropW / 2.0, cropH / 2.0);
+    final List<Map<String, dynamic>> candidates = [];
+
+    void checkCandidate(String text, Rect box) {
+      String? plate = _tryParsePlate(text);
+      if (plate != null && plate.isNotEmpty) {
+        double dist = (box.center - cropCenter).distance;
+        candidates.add({
+          'plate': plate,
+          'dist': dist,
+          'area': box.width * box.height,
+        });
+      }
+    }
+
+    // 1. Check each block
+    for (final block in recognizedText.blocks) {
+      checkCandidate(block.text, block.boundingBox);
+
+      // 2. Check each line
+      for (final line in block.lines) {
+        checkCandidate(line.text, line.boundingBox);
+      }
+
+      // 3. Check multi-line combinations inside block (e.g. Line 1: RJ07, Line 2: GC0138)
+      if (block.lines.length >= 2) {
+        for (int i = 0; i < block.lines.length - 1; i++) {
+          final l1 = block.lines[i];
+          final l2 = block.lines[i + 1];
+          final combined = "${l1.text} ${l2.text}";
+          final combinedBox = l1.boundingBox.expandToInclude(l2.boundingBox);
+          checkCandidate(combined, combinedBox);
+        }
+      }
+    }
+
+    // 4. Also check adjacent blocks if lines were split across blocks
+    if (recognizedText.blocks.length >= 2) {
+      for (int i = 0; i < recognizedText.blocks.length - 1; i++) {
+        final b1 = recognizedText.blocks[i];
+        final b2 = recognizedText.blocks[i + 1];
+        final combined = "${b1.text} ${b2.text}";
+        final combinedBox = b1.boundingBox.expandToInclude(b2.boundingBox);
+        checkCandidate(combined, combinedBox);
+      }
+    }
+
+    // Sort: 1. Closest to center reticle, 2. Largest bounding area
+    if (candidates.isNotEmpty) {
+      candidates.sort((a, b) {
+        double distA = a['dist'] as double;
+        double distB = b['dist'] as double;
+        if ((distA - distB).abs() > 60) {
+          return distA.compareTo(distB);
+        }
+        double areaA = a['area'] as double;
+        double areaB = b['area'] as double;
+        return areaB.compareTo(areaA);
+      });
+      return candidates.first['plate'] as String;
+    }
+
     return "";
   }
 
@@ -344,6 +478,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
         actions: [
           TextButton(
             onPressed: () {
+              _playClickSound();
               setState(() => _kantaRstNo = "");
               Navigator.pop(ctx);
             },
@@ -355,6 +490,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
               foregroundColor: Colors.black,
             ),
             onPressed: () {
+              _playClickSound();
               setState(() => _kantaRstNo = textController.text.trim());
               Navigator.pop(ctx);
               ScaffoldMessenger.of(context).showSnackBar(
@@ -451,7 +587,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                 foregroundColor: Colors.black,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
-              onPressed: () => Navigator.pop(ctx),
+              onPressed: () {
+                _playClickSound();
+                Navigator.pop(ctx);
+              },
               child: const Text("OK", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
             ),
           ),
@@ -523,26 +662,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
-    // Instant Click Sound & Heavy Haptic Feedback
-    SystemSound.play(SystemSoundType.click);
-    HapticFeedback.heavyImpact();
-
+    _playShutterSound();
     _updateClock();
     setState(() => _isProcessing = true);
 
     try {
       XFile rawFile = await _controller!.takePicture();
-
-      // Run AI Google ML Kit to Scan Vehicle Number
-      String vehiclePlate = "";
-      try {
-        final inputImage = InputImage.fromFilePath(rawFile.path);
-        final recognizedText = await _textRecognizer.processImage(inputImage);
-        vehiclePlate = _extractIndianPlate(recognizedText.text);
-      } catch (e) {
-        debugPrint("AI OCR Err: $e");
-      }
-
       Uint8List bytes = await rawFile.readAsBytes();
 
       // Downsample to 1200 width for lightning-fast 0.1s processing & crisp ~1MB photo!
@@ -560,6 +685,32 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
       double cropX = (fullImg.width - finalW) / 2.0;
       double cropY = (fullImg.height - finalH) / 2.0;
+
+      // 1. Create clean 3:4 cropped image for AI OCR
+      // This GUARANTEES AI OCR ONLY scans inside the 3:4 preview shown to user and NEVER outside!
+      String vehiclePlate = "";
+      try {
+        final cleanRecorder = ui.PictureRecorder();
+        final cleanCanvas = Canvas(cleanRecorder, Rect.fromLTWH(0, 0, finalW, finalH));
+        cleanCanvas.drawImageRect(
+          fullImg,
+          Rect.fromLTWH(cropX, cropY, finalW, finalH),
+          Rect.fromLTWH(0, 0, finalW, finalH),
+          Paint(),
+        );
+        final cleanPic = cleanRecorder.endRecording();
+        final cleanImg = await cleanPic.toImage(finalW.toInt(), finalH.toInt());
+        final cleanData = await cleanImg.toByteData(format: ui.ImageByteFormat.png);
+        if (cleanData != null) {
+          final tempCropFile = File('${Directory.systemTemp.path}/arawali_crop_ocr.png');
+          await tempCropFile.writeAsBytes(cleanData.buffer.asUint8List(), flush: true);
+          final inputImage = InputImage.fromFilePath(tempCropFile.path);
+          final recognizedText = await _textRecognizer.processImage(inputImage);
+          vehiclePlate = _extractIndianPlateFromRecognizedText(recognizedText, finalW, finalH);
+        }
+      } catch (e) {
+        debugPrint("AI OCR Err: $e");
+      }
 
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, finalW, finalH));
@@ -630,43 +781,52 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
       // Text Data
       final textX = mapX + mapSize + 14;
-      final baseFont = cardH * 0.084;
+      final baseFont = cardH * 0.082;
 
       // 1. Header: ARAWALI GPS CAMERA
-      _drawText(canvas, "★ ARAWALI GPS CAMERA ★", Offset(textX, cardY + (baseFont * 1.0)), baseFont + 1, const Color(0xFFFFCC00), isBold: true);
+      _drawText(canvas, "★ ARAWALI GPS CAMERA ★", Offset(textX, cardY + (baseFont * 0.95)), baseFont + 1, const Color(0xFFFFCC00), isBold: true);
 
       // 2. City + Flag
-      _drawText(canvas, "$_city 🇮🇳", Offset(textX, cardY + (baseFont * 2.2)), baseFont + 3, Colors.white, isBold: true);
+      _drawText(canvas, "$_city 🇮🇳", Offset(textX, cardY + (baseFont * 2.1)), baseFont + 2.5, Colors.white, isBold: true);
 
       // 3. FULL ADDRESS (Replaced Lat/Long & Alt)
       List<String> addrLines = _wrapText(_address, 42);
-      _drawText(canvas, addrLines.isNotEmpty ? addrLines[0] : _address, Offset(textX, cardY + (baseFont * 3.5)), baseFont - 1, const Color(0xFFE2E8F0));
+      _drawText(canvas, addrLines.isNotEmpty ? addrLines[0] : _address, Offset(textX, cardY + (baseFont * 3.3)), baseFont - 1, const Color(0xFFE2E8F0));
       if (addrLines.length > 1) {
-        _drawText(canvas, addrLines[1], Offset(textX, cardY + (baseFont * 4.7)), baseFont - 1, const Color(0xFFCBD5E1));
+        _drawText(canvas, addrLines[1], Offset(textX, cardY + (baseFont * 4.4)), baseFont - 1, const Color(0xFFCBD5E1));
       }
 
       // 4. KANTA RST / VEHICLE / COMPANY & TELEMETRY FILLER
-      // (NEVER LEAVES ANY EMPTY SPACE - ALWAYS BEAUTIFULLY FILLED!)
-      double dynamicY = cardY + (baseFont * 6.0);
+      // (NEVER LEAVES ANY EMPTY GAP - EVERY LINE BEAUTIFULLY POPULATED!)
+      double dynamicY = cardY + (baseFont * 5.65);
 
-      // Row A: Kanta RST No. OR Company Name
+      // Line 5: Kanta RST No. OR Company Name
       if (_kantaRstNo.isNotEmpty) {
-        _drawText(canvas, "⚖️ KANTA RST NO: $_kantaRstNo", Offset(textX, dynamicY), baseFont + 2, const Color(0xFF00FF66), isBold: true, isMonospace: true);
-        dynamicY += (baseFont * 1.35);
+        _drawText(canvas, "⚖️ KANTA RST NO: $_kantaRstNo", Offset(textX, dynamicY), baseFont + 1.8, const Color(0xFF00FF66), isBold: true, isMonospace: true);
       } else {
-        _drawText(canvas, "🏢 LAKDA DAL & BESAN UTPADAN KENDRA", Offset(textX, dynamicY), baseFont - 0.5, const Color(0xFFE2E8F0), isBold: true);
-        dynamicY += (baseFont * 1.35);
+        _drawText(canvas, "🏢 LAKDA DAL & BESAN UTPADAN KENDRA", Offset(textX, dynamicY), baseFont, const Color(0xFF00E5FF), isBold: true);
       }
+      dynamicY += (baseFont * 1.25);
 
-      // Row B: AI Vehicle Number OR Live Compass & Telemetry
+      // Line 6: AI Vehicle Number OR Weighbridge Status
       if (vehiclePlate.isNotEmpty) {
         _drawText(canvas, "🚗 VEHICLE: $vehiclePlate [AI VERIFIED]", Offset(textX, dynamicY), baseFont + 1, const Color(0xFFFFD700), isBold: true, isMonospace: true);
+      } else {
+        _drawText(canvas, "⚖️ WEIGHMENT & DISPATCH VERIFIED VKI", Offset(textX, dynamicY), baseFont - 0.5, const Color(0xFFE2E8F0), isBold: true);
+      }
+      dynamicY += (baseFont * 1.25);
+
+      // Line 7: Filler Row (100% eliminates the blank line gap between Vehicle and Date!)
+      if (_kantaRstNo.isNotEmpty && vehiclePlate.isNotEmpty) {
+        _drawText(canvas, "🏢 LAKDA DAL & BESAN • 🧭 NW 315° • ⛅ 28°C", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true);
+      } else if (vehiclePlate.isNotEmpty) {
+        _drawText(canvas, "🏢 LAKDA DAL & BESAN KENDRA • 🛡️ 100% SECURE", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true);
       } else {
         _drawText(canvas, "🧭 Compass: NW 315° • Alt: 428m • ⛅ 28°C", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true, isMonospace: true);
       }
 
-      // 5. DATE & TIME (CLEAN WITHOUT GMT - HIGHLIGHTED & PROMINENT)
-      _drawText(canvas, "📅 $_dateStr  $_timeStr", Offset(textX, cardY + cardH - (baseFont * 1.3)), baseFont + 1, const Color(0xFFFFCC00), isBold: true, isMonospace: true);
+      // Line 8: DATE & TIME (CLEAN WITHOUT GMT - HIGHLIGHTED & PROMINENT)
+      _drawText(canvas, "📅 $_dateStr  $_timeStr", Offset(textX, cardY + cardH - (baseFont * 1.15)), baseFont + 1, const Color(0xFFFFCC00), isBold: true, isMonospace: true);
 
       final picture = recorder.endRecording();
       final finalImage = await picture.toImage(finalW.toInt(), finalH.toInt());
@@ -812,6 +972,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                 IconButton(
                   icon: Icon(Icons.grid_on, color: _isGridOn ? const Color(0xFFFFCC00) : Colors.white54, size: 24),
                   onPressed: () {
+                    _playClickSound();
                     setState(() => _isGridOn = !_isGridOn);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text(_isGridOn ? "Grid Enabled" : "Grid Disabled"), duration: const Duration(milliseconds: 600)),
@@ -824,19 +985,31 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                     color: _isFlashOn ? const Color(0xFFFFCC00) : Colors.white,
                     size: 26,
                   ),
-                  onPressed: _toggleFlash,
+                  onPressed: () {
+                    _playClickSound();
+                    _toggleFlash();
+                  },
                 ),
                 IconButton(
                   icon: const Icon(Icons.satellite_alt_outlined, color: Color(0xFF00E5FF), size: 26),
-                  onPressed: _triggerLocationPopup, // Clicking radar shows live location popup!
+                  onPressed: () {
+                    _playClickSound();
+                    _triggerLocationPopup();
+                  },
                 ),
                 IconButton(
                   icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 26),
-                  onPressed: _flipCamera,
+                  onPressed: () {
+                    _playClickSound();
+                    _flipCamera();
+                  },
                 ),
                 IconButton(
                   icon: const Icon(Icons.settings, color: Color(0xFFFFCC00), size: 26),
-                  onPressed: _openSettingsDialog,
+                  onPressed: () {
+                    _playClickSound();
+                    _openSettingsDialog();
+                  },
                 ),
               ],
             ),
@@ -968,6 +1141,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                       right: 0,
                       child: GestureDetector(
                         onTap: () {
+                          _playClickSound();
                           _popupTimer?.cancel();
                           setState(() => _showLocationPopup = false);
                         },
@@ -992,7 +1166,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
             left: 14,
             right: 14,
             child: GestureDetector(
-              onTap: _triggerLocationPopup, // Clicking map preview also triggers live location popup!
+              onTap: () {
+                _playClickSound();
+                _triggerLocationPopup();
+              },
               child: Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -1035,6 +1212,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                             Text("⚖️ KANTA RST: $_kantaRstNo", style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10, fontWeight: FontWeight.bold))
                           else
                             Text("🏢 LAKDA DAL & BESAN KENDRA", style: GoogleFonts.fredoka(color: const Color(0xFFE2E8F0), fontSize: 9.5, fontWeight: FontWeight.bold)),
+                          Text("🧭 NW 315° • ⛅ 28°C", style: GoogleFonts.orbitron(color: const Color(0xFF00E5FF), fontSize: 9, fontWeight: FontWeight.bold)),
                           Text("📅 $_dateStr • $_timeStr", style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 10, fontWeight: FontWeight.bold)),
                         ],
                       ),
@@ -1055,7 +1233,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   GestureDetector(
-                    onTap: () => _setZoom(1.0),
+                    onTap: () {
+                      _playClickSound();
+                      _setZoom(1.0);
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       decoration: BoxDecoration(
@@ -1067,7 +1248,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   ),
                   const SizedBox(width: 10),
                   GestureDetector(
-                    onTap: () => _setZoom(2.0),
+                    onTap: () {
+                      _playClickSound();
+                      _setZoom(2.0);
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       decoration: BoxDecoration(
@@ -1093,7 +1277,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
               children: [
                 // 1. Vault Gallery Preview
                 GestureDetector(
-                  onTap: _openAllPhotosGallery,
+                  onTap: () {
+                    _playClickSound();
+                    _openAllPhotosGallery();
+                  },
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1118,7 +1305,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
                 // 2. Locations / Radar
                 GestureDetector(
-                  onTap: _triggerLocationPopup,
+                  onTap: () {
+                    _playClickSound();
+                    _triggerLocationPopup();
+                  },
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1131,7 +1321,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
                 // 3. Main Instant Shutter Button
                 GestureDetector(
-                  onTap: _isProcessing ? null : _captureAndStamp,
+                  onTap: _isProcessing ? null : () {
+                    _playShutterSound();
+                    _captureAndStamp();
+                  },
                   child: Container(
                     width: 76,
                     height: 76,
@@ -1164,7 +1357,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
                 // 4. Storage Vault
                 GestureDetector(
-                  onTap: _openAllPhotosGallery,
+                  onTap: () {
+                    _playClickSound();
+                    _openAllPhotosGallery();
+                  },
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1177,7 +1373,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
                 // 5. KANTA PARCHI
                 GestureDetector(
-                  onTap: _openKantaParchiDialog,
+                  onTap: () {
+                    _playClickSound();
+                    _openKantaParchiDialog();
+                  },
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
