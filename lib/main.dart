@@ -73,10 +73,19 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
   List<Uint8List> _allCapturedPhotos = [];
 
-  double _lat = 26.975279;
-  double _lon = 75.778887;
+  // Factory Geo-fence Coordinates (Lakda Dal & Besan Utpadan Kendra, VKI Jaipur)
+  static const double _factoryLat = 26.9742384;
+  static const double _factoryLon = 75.7788708;
+  static const double _maxAllowedRadius = 400.0; // Allowed 400 meter radius
+
+  double _lat = 26.9742384;
+  double _lon = 75.7788708;
+  double _distanceFromFactory = 0.0;
+  bool _isInGeoFence = true;
+  StreamSubscription<Position>? _positionStreamSub;
+
   String _city = "Jaipur, Rajasthan, India";
-  String _address = "Sector 9, Vishwakarma Industrial Area, Jaipur 302013";
+  String _address = "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013";
   String _timeStr = "";
   String _dateStr = "";
   
@@ -172,13 +181,20 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     }
   }
 
+  void _updatePosition(Position pos) {
+    _lat = pos.latitude;
+    _lon = pos.longitude;
+    _distanceFromFactory = Geolocator.distanceBetween(_lat, _lon, _factoryLat, _factoryLon);
+    _isInGeoFence = _distanceFromFactory <= _maxAllowedRadius;
+    if (mounted) setState(() {});
+  }
+
   Future<void> _initLocation() async {
     try {
       Position pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-      _lat = pos.latitude;
-      _lon = pos.longitude;
+      _updatePosition(pos);
 
       _fetchSatelliteMap();
       _loadVerificationQR();
@@ -197,6 +213,16 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
         }
       }
       if (mounted) setState(() {});
+
+      // Continuous Real-Time GPS Tracking Stream (Stays Connected to GPS)
+      const LocationSettings locationSettings = LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 2, // Live update every 2 meters
+      );
+      _positionStreamSub?.cancel();
+      _positionStreamSub = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position livePos) {
+        _updatePosition(livePos);
+      });
     } catch (e) {
       debugPrint("GPS err: $e");
     }
@@ -662,6 +688,22 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
+    // Strict Geo-Fence Check: Photo allowed ONLY within 400m radius of factory!
+    if (!_isInGeoFence) {
+      _playClickSound();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "❌ आउट ऑफ रेंज! फ़ोटो सिर्फ़ फ़ैक्ट्री के 400m दायरे में ही खींची जा सकती है। (दूरी: ${_distanceFromFactory.toStringAsFixed(0)}m)",
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
     _playShutterSound();
     _updateClock();
     setState(() => _isProcessing = true);
@@ -816,14 +858,16 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       }
       dynamicY += (baseFont * 1.25);
 
-      // Line 7: Filler Row (100% eliminates the blank line gap between Vehicle and Date!)
-      if (_kantaRstNo.isNotEmpty && vehiclePlate.isNotEmpty) {
-        _drawText(canvas, "🏢 LAKDA DAL & BESAN • 🧭 NW 315° • ⛅ 28°C", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true);
-      } else if (vehiclePlate.isNotEmpty) {
-        _drawText(canvas, "🏢 LAKDA DAL & BESAN KENDRA • 🛡️ 100% SECURE", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true);
-      } else {
-        _drawText(canvas, "🧭 Compass: NW 315° • Alt: 428m • ⛅ 28°C", Offset(textX, dynamicY), baseFont - 1, const Color(0xFF00E5FF), isBold: true, isMonospace: true);
-      }
+      // Line 7: FACTORY DISTANCE (Shows exact distance in meters from factory, verified within 400m!)
+      _drawText(
+        canvas, 
+        "📍 FACTORY DISTANCE: ${_distanceFromFactory.toStringAsFixed(0)}m [IN 400m ZONE]", 
+        Offset(textX, dynamicY), 
+        baseFont, 
+        const Color(0xFF00E5FF), 
+        isBold: true, 
+        isMonospace: true,
+      );
 
       // Line 8: DATE & TIME (CLEAN WITHOUT GMT - HIGHLIGHTED & PROMINENT)
       _drawText(canvas, "📅 $_dateStr  $_timeStr", Offset(textX, cardY + cardH - (baseFont * 1.15)), baseFont + 1, const Color(0xFFFFCC00), isBold: true, isMonospace: true);
@@ -902,6 +946,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
   @override
   void dispose() {
+    _positionStreamSub?.cancel();
     _popupTimer?.cancel();
     _controller?.dispose();
     _textRecognizer.close();
@@ -1089,6 +1134,50 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
               ),
             ),
 
+          // Live Geo-Fence Security Badge on Screen (Always Active)
+          Positioned(
+            top: 105,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.85),
+                borderRadius: BorderRadius.circular(15),
+                border: Border.all(
+                  color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF3333), 
+                  width: 1.5,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: _isInGeoFence ? const Color(0x3300FF66) : const Color(0x66FF0000), 
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _isInGeoFence ? Icons.verified : Icons.lock, 
+                    color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF3333), 
+                    size: 15,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    _isInGeoFence 
+                        ? "${_distanceFromFactory.toStringAsFixed(0)}m [400m ZONE]"
+                        : "LOCKED: ${_distanceFromFactory.toStringAsFixed(0)}m",
+                    style: GoogleFonts.orbitron(
+                      color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF4444), 
+                      fontSize: 10.5, 
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
           // Live Radar Location Popup (5-Second Auto Dismiss with 'X' Cross Sign)
           if (_showLocationPopup)
             Positioned(
@@ -1133,6 +1222,25 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                         Text(
                           "GPS: Lat ${_lat.toStringAsFixed(6)}°, Long ${_lon.toStringAsFixed(6)}°",
                           style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10),
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Icon(
+                              _isInGeoFence ? Icons.check_circle : Icons.cancel, 
+                              color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF4444), 
+                              size: 14,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              "फ़ैक्ट्री से दूरी: ${_distanceFromFactory.toStringAsFixed(0)}m (${_isInGeoFence ? '400m दायरे में मान्य ✓' : 'आउट ऑफ रेंज ❌'})",
+                              style: GoogleFonts.orbitron(
+                                color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF4444), 
+                                fontSize: 10, 
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -1212,7 +1320,14 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                             Text("⚖️ KANTA RST: $_kantaRstNo", style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10, fontWeight: FontWeight.bold))
                           else
                             Text("🏢 LAKDA DAL & BESAN KENDRA", style: GoogleFonts.fredoka(color: const Color(0xFFE2E8F0), fontSize: 9.5, fontWeight: FontWeight.bold)),
-                          Text("🧭 NW 315° • ⛅ 28°C", style: GoogleFonts.orbitron(color: const Color(0xFF00E5FF), fontSize: 9, fontWeight: FontWeight.bold)),
+                          Text(
+                            "📍 FACTORY: ${_distanceFromFactory.toStringAsFixed(0)}m [${_isInGeoFence ? 'IN 400m ZONE ✓' : 'OUT OF ZONE ❌'}]", 
+                            style: GoogleFonts.orbitron(
+                              color: _isInGeoFence ? const Color(0xFF00E5FF) : const Color(0xFFFF4444), 
+                              fontSize: 9, 
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                           Text("📅 $_dateStr • $_timeStr", style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 10, fontWeight: FontWeight.bold)),
                         ],
                       ),
@@ -1319,29 +1434,55 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   ),
                 ),
 
-                // 3. Main Instant Shutter Button
+                // 3. Main Instant Shutter Button (Active strictly within 400m Geo-Fence!)
                 GestureDetector(
-                  onTap: _isProcessing ? null : () {
-                    _playShutterSound();
-                    _captureAndStamp();
-                  },
+                  onTap: _isProcessing 
+                      ? null 
+                      : (_isInGeoFence ? () {
+                          _playShutterSound();
+                          _captureAndStamp();
+                        } : () {
+                          _playClickSound();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                "🔒 कैमरा लॉक है! आप फ़ैक्ट्री से ${_distanceFromFactory.toStringAsFixed(0)}m दूर हैं। (अनुमति: 400m के अंदर)",
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              backgroundColor: Colors.redAccent,
+                              duration: const Duration(seconds: 3),
+                            ),
+                          );
+                        }),
                   child: Container(
                     width: 76,
                     height: 76,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 3.5),
-                      boxShadow: const [BoxShadow(color: Color(0x66FFCC00), blurRadius: 18)],
+                      border: Border.all(
+                        color: _isInGeoFence ? Colors.white : Colors.redAccent, 
+                        width: 3.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _isInGeoFence ? const Color(0x66FFCC00) : const Color(0x66FF0000), 
+                          blurRadius: 18,
+                        ),
+                      ],
                     ),
                     child: Center(
                       child: Container(
                         width: 62,
                         height: 62,
-                        decoration: const BoxDecoration(
+                        decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            colors: [Color(0xFFFFDD00), Color(0xFFFF8800)],
-                          ),
+                          gradient: _isInGeoFence
+                              ? const LinearGradient(
+                                  colors: [Color(0xFFFFDD00), Color(0xFFFF8800)],
+                                )
+                              : const LinearGradient(
+                                  colors: [Color(0xFF555555), Color(0xFF333333)],
+                                ),
                         ),
                         child: _isProcessing
                             ? const SizedBox(
@@ -1349,7 +1490,11 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                                 height: 24,
                                 child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2.5),
                               )
-                            : const Icon(Icons.camera_alt, color: Colors.black, size: 32),
+                            : Icon(
+                                _isInGeoFence ? Icons.camera_alt : Icons.lock, 
+                                color: _isInGeoFence ? Colors.black : Colors.white70, 
+                                size: 30,
+                              ),
                       ),
                     ),
                   ),
