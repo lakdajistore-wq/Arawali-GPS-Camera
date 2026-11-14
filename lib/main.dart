@@ -186,6 +186,11 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     _lon = pos.longitude;
     _distanceFromFactory = Geolocator.distanceBetween(_lat, _lon, _factoryLat, _factoryLon);
     _isInGeoFence = _distanceFromFactory <= _maxAllowedRadius;
+    if (_isInGeoFence) {
+      // Within factory 400m zone: ALWAYS lock to official company factory address!
+      _address = "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013";
+      _city = "Jaipur, Rajasthan, India";
+    }
     if (mounted) setState(() {});
   }
 
@@ -199,18 +204,24 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       _fetchSatelliteMap();
       _loadVerificationQR();
 
-      final url = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=json&lat=$_lat&lon=$_lon');
-      final res = await http.get(url, headers: {'User-Agent': 'ArawaliGPSCamera/2.0'});
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (data != null && data['address'] != null) {
-          final addr = data['address'];
-          final city = addr['city'] ?? addr['state_district'] ?? addr['town'] ?? 'Jaipur';
-          final state = addr['state'] ?? 'Rajasthan';
-          final country = addr['country'] ?? 'India';
-          _city = "$city, $state, $country";
-          _address = data['display_name'] ?? _address;
+      // Only query Nominatim if user is outside the factory zone
+      if (!_isInGeoFence) {
+        final url = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=json&lat=$_lat&lon=$_lon');
+        final res = await http.get(url, headers: {'User-Agent': 'ArawaliGPSCamera/2.0'});
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          if (data != null && data['address'] != null) {
+            final addr = data['address'];
+            final city = addr['city'] ?? addr['state_district'] ?? addr['town'] ?? 'Jaipur';
+            final state = addr['state'] ?? 'Rajasthan';
+            final country = addr['country'] ?? 'India';
+            _city = "$city, $state, $country";
+            _address = data['display_name'] ?? _address;
+          }
         }
+      } else {
+        _address = "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013";
+        _city = "Jaipur, Rajasthan, India";
       }
       if (mounted) setState(() {});
 
@@ -828,12 +839,18 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       // 1. Header: ARAWALI GPS CAMERA
       _drawText(canvas, "★ ARAWALI GPS CAMERA ★", Offset(textX, cardY + (baseFont * 0.95)), baseFont + 1, const Color(0xFFFFCC00), isBold: true);
 
+      // 3. FULL ADDRESS (Guaranteed Company Factory Address in 400m Zone)
+      final String effectiveCity = _isInGeoFence ? "Jaipur, Rajasthan, India" : _city;
+      final String effectiveAddress = (_isInGeoFence || _address.contains("Sector 9") || _address.contains("Vishwakarma"))
+          ? "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013"
+          : _address;
+
       // 2. City + Flag
-      _drawText(canvas, "$_city 🇮🇳", Offset(textX, cardY + (baseFont * 2.1)), baseFont + 2.5, Colors.white, isBold: true);
+      _drawText(canvas, "$effectiveCity 🇮🇳", Offset(textX, cardY + (baseFont * 2.1)), baseFont + 2.5, Colors.white, isBold: true);
 
       // 3. FULL ADDRESS (Replaced Lat/Long & Alt)
-      List<String> addrLines = _wrapText(_address, 42);
-      _drawText(canvas, addrLines.isNotEmpty ? addrLines[0] : _address, Offset(textX, cardY + (baseFont * 3.3)), baseFont - 1, const Color(0xFFE2E8F0));
+      List<String> addrLines = _wrapText(effectiveAddress, 42);
+      _drawText(canvas, addrLines.isNotEmpty ? addrLines[0] : effectiveAddress, Offset(textX, cardY + (baseFont * 3.3)), baseFont - 1, const Color(0xFFE2E8F0));
       if (addrLines.length > 1) {
         _drawText(canvas, addrLines[1], Offset(textX, cardY + (baseFont * 4.4)), baseFont - 1, const Color(0xFFCBD5E1));
       }
@@ -961,6 +978,14 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       );
     }
 
+    final double bottomInset = MediaQuery.of(context).padding.bottom;
+    final double safeBottom = bottomInset > 20 ? (bottomInset + 14.0) : 32.0;
+
+    final String effectiveCity = _isInGeoFence ? "Jaipur, Rajasthan, India" : _city;
+    final String effectiveAddress = (_isInGeoFence || _address.contains("Sector 9") || _address.contains("Vishwakarma"))
+        ? "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013"
+        : _address;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -1060,12 +1085,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
             ),
           ),
 
-          // Brightness Slider (Comfortable Thumb-Reach Height ~220px)
+          // Brightness Slider (Comfortable Thumb-Reach Height)
           Positioned(
             right: 12,
-            bottom: 195,
+            bottom: safeBottom + 140,
             child: Container(
-              height: 220,
+              height: 210,
               width: 48,
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
               decoration: BoxDecoration(
@@ -1210,12 +1235,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          "📍 $_city 🇮🇳",
+                          "📍 $effectiveCity 🇮🇳",
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          _address,
+                          effectiveAddress,
                           style: const TextStyle(color: Colors.white70, fontSize: 11),
                         ),
                         const SizedBox(height: 6),
@@ -1270,7 +1295,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
           // Live Bottom Stamp Preview
           Positioned(
-            bottom: 155,
+            bottom: safeBottom + 128,
             left: 14,
             right: 14,
             child: GestureDetector(
@@ -1314,8 +1339,8 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                         children: [
                           Text("★ ARAWALI GPS CAMERA ★", style: GoogleFonts.fredoka(color: const Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 11)),
                           const SizedBox(height: 1),
-                          Text("$_city 🇮🇳", style: GoogleFonts.fredoka(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                          Text(_address, style: GoogleFonts.fredoka(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
+                          Text("$effectiveCity 🇮🇳", style: GoogleFonts.fredoka(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                          Text(effectiveAddress, style: GoogleFonts.fredoka(color: Colors.white70, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
                           if (_kantaRstNo.isNotEmpty)
                             Text("⚖️ KANTA RST: $_kantaRstNo", style: GoogleFonts.orbitron(color: const Color(0xFF00FF66), fontSize: 10, fontWeight: FontWeight.bold))
                           else
@@ -1340,7 +1365,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
           // 1x / 2x Zoom Controls
           Positioned(
-            bottom: 112,
+            bottom: safeBottom + 88,
             left: 0,
             right: 0,
             child: Center(
@@ -1381,9 +1406,9 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
             ),
           ),
 
-          // Bottom Bar 5 Control Buttons
+          // Bottom Bar 5 Control Buttons (Elevated above Android 3-Button & Gesture navigation!)
           Positioned(
-            bottom: 15,
+            bottom: safeBottom,
             left: 15,
             right: 15,
             child: Row(
