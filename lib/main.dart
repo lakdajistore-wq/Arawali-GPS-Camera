@@ -76,7 +76,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   // Factory Geo-fence Coordinates (Lakda Dal & Besan Utpadan Kendra, VKI Jaipur)
   static const double _factoryLat = 26.9742384;
   static const double _factoryLon = 75.7788708;
-  static const double _maxAllowedRadius = 400.0; // Allowed 400 meter radius
+  static const double _maxAllowedRadius = 300.0; // Allowed 300 meter radius
 
   double _lat = 26.9742384;
   double _lon = 75.7788708;
@@ -187,7 +187,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     _distanceFromFactory = Geolocator.distanceBetween(_lat, _lon, _factoryLat, _factoryLon);
     _isInGeoFence = _distanceFromFactory <= _maxAllowedRadius;
     if (_isInGeoFence) {
-      // Within factory 400m zone: ALWAYS lock to official company factory address!
+      // Within factory 300m zone: ALWAYS lock to official company factory address!
       _address = "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013";
       _city = "Jaipur, Rajasthan, India";
     }
@@ -699,13 +699,13 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   Future<void> _captureAndStamp() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) return;
 
-    // Strict Geo-Fence Check: Photo allowed ONLY within 400m radius of factory!
+    // Strict Geo-Fence Check: Photo allowed ONLY within 300m radius of factory!
     if (!_isInGeoFence) {
       _playClickSound();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            "❌ आउट ऑफ रेंज! फ़ोटो सिर्फ़ फ़ैक्ट्री के 400m दायरे में ही खींची जा सकती है। (दूरी: ${_distanceFromFactory.toStringAsFixed(0)}m)",
+            "❌ आउट ऑफ रेंज! फ़ोटो सिर्फ़ फ़ैक्ट्री के 300m दायरे में ही खींची जा सकती है। (दूरी: ${_distanceFromFactory.toStringAsFixed(0)}m)",
             style: const TextStyle(fontWeight: FontWeight.bold),
           ),
           backgroundColor: Colors.redAccent,
@@ -836,58 +836,68 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       final textX = mapX + mapSize + 14;
       final baseFont = cardH * 0.082;
 
-      // 1. Header: ARAWALI GPS CAMERA
-      _drawText(canvas, "★ ARAWALI GPS CAMERA ★", Offset(textX, cardY + (baseFont * 0.95)), baseFont + 1, const Color(0xFFFFCC00), isBold: true);
-
-      // 3. FULL ADDRESS (Guaranteed Company Factory Address in 400m Zone)
+      // 3. FULL ADDRESS (Guaranteed Company Factory Address in 300m Zone)
       final String effectiveCity = _isInGeoFence ? "Jaipur, Rajasthan, India" : _city;
       final String effectiveAddress = (_isInGeoFence || _address.contains("Sector 9") || _address.contains("Vishwakarma"))
           ? "Rd Number 1, Vishwakarma Industrial Area, Jaipur 302013"
           : _address;
 
+      double currY = cardY + (baseFont * 1.0);
+
+      // 1. Header: ARAWALI GPS CAMERA
+      _drawText(canvas, "★ ARAWALI GPS CAMERA ★", Offset(textX, currY), baseFont + 1.2, const Color(0xFFFFCC00), isBold: true);
+      currY += (baseFont * 1.25);
+
       // 2. City + Flag
-      _drawText(canvas, "$effectiveCity 🇮🇳", Offset(textX, cardY + (baseFont * 2.1)), baseFont + 2.5, Colors.white, isBold: true);
+      _drawText(canvas, "$effectiveCity 🇮🇳", Offset(textX, currY), baseFont + 2.0, Colors.white, isBold: true);
+      currY += (baseFont * 1.25);
 
       // 3. FULL ADDRESS (Replaced Lat/Long & Alt)
       List<String> addrLines = _wrapText(effectiveAddress, 42);
-      _drawText(canvas, addrLines.isNotEmpty ? addrLines[0] : effectiveAddress, Offset(textX, cardY + (baseFont * 3.3)), baseFont - 1, const Color(0xFFE2E8F0));
-      if (addrLines.length > 1) {
-        _drawText(canvas, addrLines[1], Offset(textX, cardY + (baseFont * 4.4)), baseFont - 1, const Color(0xFFCBD5E1));
+      for (String line in addrLines.take(2)) {
+        _drawText(canvas, line, Offset(textX, currY), baseFont - 0.5, const Color(0xFFE2E8F0));
+        currY += (baseFont * 1.15);
       }
 
       // 4. KANTA RST / VEHICLE / COMPANY & TELEMETRY FILLER
       // (NEVER LEAVES ANY EMPTY GAP - EVERY LINE BEAUTIFULLY POPULATED!)
-      double dynamicY = cardY + (baseFont * 5.65);
-
-      // Line 5: Kanta RST No. OR Company Name
       if (_kantaRstNo.isNotEmpty) {
-        _drawText(canvas, "⚖️ KANTA RST NO: $_kantaRstNo", Offset(textX, dynamicY), baseFont + 1.8, const Color(0xFF00FF66), isBold: true, isMonospace: true);
+        _drawText(canvas, "⚖️ KANTA RST NO: $_kantaRstNo", Offset(textX, currY), baseFont + 1.8, const Color(0xFF00FF66), isBold: true, isMonospace: true);
       } else {
-        _drawText(canvas, "🏢 LAKDA DAL & BESAN UTPADAN KENDRA", Offset(textX, dynamicY), baseFont, const Color(0xFF00E5FF), isBold: true);
+        _drawText(canvas, "🏢 LAKDA DAL & BESAN UTPADAN KENDRA", Offset(textX, currY), baseFont + 0.5, const Color(0xFF00E5FF), isBold: true);
       }
-      dynamicY += (baseFont * 1.25);
+      currY += (baseFont * 1.25);
 
-      // Line 6: AI Vehicle Number OR Weighbridge Status
+      // 5. AI Vehicle Number OR Weighbridge Status
       if (vehiclePlate.isNotEmpty) {
-        _drawText(canvas, "🚗 VEHICLE: $vehiclePlate [AI VERIFIED]", Offset(textX, dynamicY), baseFont + 1, const Color(0xFFFFD700), isBold: true, isMonospace: true);
+        _drawText(canvas, "🚗 VEHICLE: $vehiclePlate [AI VERIFIED]", Offset(textX, currY), baseFont + 1.0, const Color(0xFFFFD700), isBold: true, isMonospace: true);
       } else {
-        _drawText(canvas, "⚖️ WEIGHMENT & DISPATCH VERIFIED VKI", Offset(textX, dynamicY), baseFont - 0.5, const Color(0xFFE2E8F0), isBold: true);
+        _drawText(canvas, "⚖️ WEIGHMENT & DISPATCH VERIFIED VKI", Offset(textX, currY), baseFont, const Color(0xFFE2E8F0), isBold: true);
       }
-      dynamicY += (baseFont * 1.25);
+      currY += (baseFont * 1.25);
 
-      // Line 7: FACTORY DISTANCE (Shows exact distance in meters from factory, verified within 400m!)
+      // 6. FACTORY DISTANCE (Shows exact distance in meters from factory, verified within 300m!)
       _drawText(
         canvas, 
-        "📍 FACTORY DISTANCE: ${_distanceFromFactory.toStringAsFixed(0)}m [IN 400m ZONE]", 
-        Offset(textX, dynamicY), 
-        baseFont, 
+        "📍 FACTORY DISTANCE: ${_distanceFromFactory.toStringAsFixed(0)}m [IN 300m ZONE]", 
+        Offset(textX, currY), 
+        baseFont + 0.5, 
         const Color(0xFF00E5FF), 
         isBold: true, 
         isMonospace: true,
       );
+      currY += (baseFont * 1.45);
 
-      // Line 8: DATE & TIME (CLEAN WITHOUT GMT - HIGHLIGHTED & PROMINENT)
-      _drawText(canvas, "📅 $_dateStr  $_timeStr", Offset(textX, cardY + cardH - (baseFont * 1.15)), baseFont + 1, const Color(0xFFFFCC00), isBold: true, isMonospace: true);
+      // 7. DATE & TIME (HIGHLIGHTED & PROMINENT - BOLD GOLD - ZERO GAP!)
+      _drawText(
+        canvas, 
+        "📅 $_dateStr  $_timeStr", 
+        Offset(textX, currY), 
+        baseFont + 3.0, 
+        const Color(0xFFFFCC00), 
+        isBold: true, 
+        isMonospace: true,
+      );
 
       final picture = recorder.endRecording();
       final finalImage = await picture.toImage(finalW.toInt(), finalH.toInt());
@@ -990,23 +1000,48 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 3:4 Boxed Camera Viewport
+          // 3:4 Boxed Camera Viewport (Exact 1:1 Match with Saved Stamped Photo!)
           Center(
             child: AspectRatio(
               aspectRatio: 3 / 4,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    CameraPreview(_controller!),
-                    
-                    // 3x3 Rule-of-Thirds Grid Overlay (Toggleable!)
-                    if (_isGridOn)
-                      CustomPaint(
-                        painter: CameraGridPainter(),
-                      ),
-                  ],
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final boxW = constraints.maxWidth;
+                    final boxH = constraints.maxHeight;
+                    // In portrait, camera stream aspect ratio is 1 / controller.value.aspectRatio
+                    final double cameraAspect = (_controller != null && _controller!.value.aspectRatio > 0)
+                        ? (1.0 / _controller!.value.aspectRatio)
+                        : (9.0 / 16.0);
+
+                    // Scale so preview fills 3:4 viewport with identical center-crop as captured photo!
+                    double targetW = boxW;
+                    double targetH = boxW / cameraAspect;
+                    if (targetH < boxH) {
+                      targetH = boxH;
+                      targetW = boxH * cameraAspect;
+                    }
+
+                    return Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox(
+                          width: targetW,
+                          height: targetH,
+                          child: CameraPreview(_controller!),
+                        ),
+
+                        // 3x3 Rule-of-Thirds Grid Overlay (Toggleable!)
+                        if (_isGridOn)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: CameraGridPainter(),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -1190,7 +1225,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   const SizedBox(width: 5),
                   Text(
                     _isInGeoFence 
-                        ? "${_distanceFromFactory.toStringAsFixed(0)}m [400m ZONE]"
+                        ? "${_distanceFromFactory.toStringAsFixed(0)}m [300m ZONE]"
                         : "LOCKED: ${_distanceFromFactory.toStringAsFixed(0)}m",
                     style: GoogleFonts.orbitron(
                       color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF4444), 
@@ -1258,7 +1293,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              "फ़ैक्ट्री से दूरी: ${_distanceFromFactory.toStringAsFixed(0)}m (${_isInGeoFence ? '400m दायरे में मान्य ✓' : 'आउट ऑफ रेंज ❌'})",
+                              "फ़ैक्ट्री से दूरी: ${_distanceFromFactory.toStringAsFixed(0)}m (${_isInGeoFence ? '300m दायरे में मान्य ✓' : 'आउट ऑफ रेंज ❌'})",
                               style: GoogleFonts.orbitron(
                                 color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF4444), 
                                 fontSize: 10, 
@@ -1346,14 +1381,15 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                           else
                             Text("🏢 LAKDA DAL & BESAN KENDRA", style: GoogleFonts.fredoka(color: const Color(0xFFE2E8F0), fontSize: 9.5, fontWeight: FontWeight.bold)),
                           Text(
-                            "📍 FACTORY: ${_distanceFromFactory.toStringAsFixed(0)}m [${_isInGeoFence ? 'IN 400m ZONE ✓' : 'OUT OF ZONE ❌'}]", 
+                            "📍 FACTORY: ${_distanceFromFactory.toStringAsFixed(0)}m [${_isInGeoFence ? 'IN 300m ZONE ✓' : 'OUT OF ZONE ❌'}]", 
                             style: GoogleFonts.orbitron(
                               color: _isInGeoFence ? const Color(0xFF00E5FF) : const Color(0xFFFF4444), 
                               fontSize: 9, 
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          Text("📅 $_dateStr • $_timeStr", style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 10, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 2),
+                          Text("📅 $_dateStr • $_timeStr", style: GoogleFonts.orbitron(color: const Color(0xFFFFCC00), fontSize: 11.5, fontWeight: FontWeight.bold)),
                         ],
                       ),
                     ),
@@ -1459,7 +1495,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   ),
                 ),
 
-                // 3. Main Instant Shutter Button (Active strictly within 400m Geo-Fence!)
+                // 3. Main Instant Shutter Button (Active strictly within 300m Geo-Fence!)
                 GestureDetector(
                   onTap: _isProcessing 
                       ? null 
@@ -1471,7 +1507,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
                               content: Text(
-                                "🔒 कैमरा लॉक है! आप फ़ैक्ट्री से ${_distanceFromFactory.toStringAsFixed(0)}m दूर हैं। (अनुमति: 400m के अंदर)",
+                                "🔒 कैमरा लॉक है! आप फ़ैक्ट्री से ${_distanceFromFactory.toStringAsFixed(0)}m दूर हैं। (अनुमति: 300m के अंदर)",
                                 style: const TextStyle(fontWeight: FontWeight.bold),
                               ),
                               backgroundColor: Colors.redAccent,
