@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -64,6 +63,12 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   double _maxExposure = 2.0;
   double _currentExposure = 0.0;
 
+  // Tap-to-Focus & Auto-Hiding Brightness (GPS Map Camera style)
+  bool _showFocusRing = false;
+  Offset? _focusRingPos;
+  Timer? _focusHideTimer;
+  bool _showExposureSlider = false;
+
   // Kanta Parchi / RST Number
   String _kantaRstNo = "";
 
@@ -71,7 +76,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   bool _showLocationPopup = false;
   Timer? _popupTimer;
 
-  List<Uint8List> _allCapturedPhotos = [];
+  final List<Uint8List> _allCapturedPhotos = [];
 
   // Factory Geo-fence Coordinates (Lakda Dal & Besan Utpadan Kendra, VKI Jaipur)
   static const double _factoryLat = 26.9742384;
@@ -89,7 +94,6 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   String _timeStr = "";
   String _dateStr = "";
   
-  ui.Image? _arawaliLogo;
   ui.Image? _satelliteMapImage;
   ui.Image? _qrCodeImage;
 
@@ -103,7 +107,6 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
 
   Future<void> _initApp() async {
     _updateClock();
-    _loadArawaliLogo();
     _loadVerificationQR();
     await _requestAllPermissions();
     _initLocation();
@@ -125,30 +128,6 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     _dateStr = DateFormat("dd/MM/yyyy").format(now);
     _timeStr = DateFormat("hh:mm:ss a").format(now);
     if (mounted) setState(() {});
-  }
-
-  Future<void> _loadArawaliLogo() async {
-    try {
-      final byteData = await rootBundle.load('assets/icon.png');
-      final codec = await ui.instantiateImageCodec(byteData.buffer.asUint8List(), targetWidth: 300);
-      final frame = await codec.getNextFrame();
-      _arawaliLogo = frame.image;
-      if (mounted) setState(() {});
-      return;
-    } catch (_) {}
-
-    try {
-      const url = "https://arawali.in/wp-content/uploads/2019/12/logo.png";
-      final res = await http.get(Uri.parse(url));
-      if (res.statusCode == 200) {
-        final codec = await ui.instantiateImageCodec(res.bodyBytes, targetWidth: 300);
-        final frame = await codec.getNextFrame();
-        _arawaliLogo = frame.image;
-        if (mounted) setState(() {});
-      }
-    } catch (e) {
-      debugPrint("Logo err: $e");
-    }
   }
 
   Future<void> _loadVerificationQR() async {
@@ -197,7 +176,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   Future<void> _initLocation() async {
     try {
       Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
       );
       _updatePosition(pos);
 
@@ -252,7 +231,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     if (cameras.isEmpty) return;
     _controller = CameraController(
       cameras[index],
-      ResolutionPreset.high, // 1080p for instant 0.1s capture, crisp ~1MB photo, no lag
+      ResolutionPreset.max, // Native 4:3 full sensor resolution (no 16:9 crop!)
       enableAudio: false,
     );
 
@@ -272,6 +251,38 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
     } catch (e) {
       debugPrint("Camera err: $e");
     }
+  }
+
+  void _onCameraTap(TapDownDetails details, double boxWidth, double boxHeight) {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    final Offset local = details.localPosition;
+    setState(() {
+      _focusRingPos = local;
+      _showFocusRing = true;
+      _showExposureSlider = true;
+    });
+
+    try {
+      final double px = (local.dx / boxWidth).clamp(0.0, 1.0);
+      final double py = (local.dy / boxHeight).clamp(0.0, 1.0);
+      _controller!.setFocusPoint(Offset(px, py));
+      _controller!.setExposurePoint(Offset(px, py));
+    } catch (_) {}
+
+    _resetExposureTimer();
+  }
+
+  void _resetExposureTimer() {
+    _focusHideTimer?.cancel();
+    _focusHideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) {
+        setState(() {
+          _showFocusRing = false;
+          _showExposureSlider = false;
+        });
+      }
+    });
   }
 
   Future<void> _toggleFlash() async {
@@ -728,26 +739,19 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       final ui.FrameInfo frameInfo = await codec.getNextFrame();
       final ui.Image fullImg = frameInfo.image;
 
-      // 3:4 Aspect Ratio (Portrait)
-      double finalW = fullImg.width.toDouble();
-      double finalH = (finalW * 4.0) / 3.0;
-      if (finalH > fullImg.height) {
-        finalH = fullImg.height.toDouble();
-        finalW = (finalH * 3.0) / 4.0;
-      }
+      // DO NOT CROP ANY PART OF THE PHOTO!
+      // Keep 100% of the camera sensor frame - exactly like GPS Map Camera!
+      final double finalW = fullImg.width.toDouble();
+      final double finalH = fullImg.height.toDouble();
 
-      double cropX = (fullImg.width - finalW) / 2.0;
-      double cropY = (fullImg.height - finalH) / 2.0;
-
-      // 1. Create clean 3:4 cropped image for AI OCR
-      // This GUARANTEES AI OCR ONLY scans inside the 3:4 preview shown to user and NEVER outside!
+      // 1. Create clean uncropped image for AI OCR
       String vehiclePlate = "";
       try {
         final cleanRecorder = ui.PictureRecorder();
         final cleanCanvas = Canvas(cleanRecorder, Rect.fromLTWH(0, 0, finalW, finalH));
         cleanCanvas.drawImageRect(
           fullImg,
-          Rect.fromLTWH(cropX, cropY, finalW, finalH),
+          Rect.fromLTWH(0, 0, finalW, finalH),
           Rect.fromLTWH(0, 0, finalW, finalH),
           Paint(),
         );
@@ -768,10 +772,10 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, finalW, finalH));
 
-      // 1. Draw 3:4 Photo
+      // 1. Draw 100% Full Uncropped Photo (Matches viewfinder 1:1!)
       canvas.drawImageRect(
         fullImg,
-        Rect.fromLTWH(cropX, cropY, finalW, finalH),
+        Rect.fromLTWH(0, 0, finalW, finalH),
         Rect.fromLTWH(0, 0, finalW, finalH),
         Paint(),
       );
@@ -975,6 +979,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
   void dispose() {
     _positionStreamSub?.cancel();
     _popupTimer?.cancel();
+    _focusHideTimer?.cancel();
     _controller?.dispose();
     _textRecognizer.close();
     super.dispose();
@@ -1000,7 +1005,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 3:4 Boxed Camera Viewport (Exact 1:1 Match with Saved Stamped Photo!)
+          // 3:4 Boxed Camera Viewport (Matches Photo 1:1 with Tap-to-Focus & Auto Exposure)
           Center(
             child: AspectRatio(
               aspectRatio: 3 / 4,
@@ -1010,36 +1015,38 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
                   builder: (context, constraints) {
                     final boxW = constraints.maxWidth;
                     final boxH = constraints.maxHeight;
-                    // In portrait, camera stream aspect ratio is 1 / controller.value.aspectRatio
-                    final double cameraAspect = (_controller != null && _controller!.value.aspectRatio > 0)
-                        ? (1.0 / _controller!.value.aspectRatio)
-                        : (9.0 / 16.0);
+                    return GestureDetector(
+                      onTapDown: (details) => _onCameraTap(details, boxW, boxH),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CameraPreview(_controller!),
 
-                    // Scale so preview fills 3:4 viewport with identical center-crop as captured photo!
-                    double targetW = boxW;
-                    double targetH = boxW / cameraAspect;
-                    if (targetH < boxH) {
-                      targetH = boxH;
-                      targetW = boxH * cameraAspect;
-                    }
-
-                    return Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        SizedBox(
-                          width: targetW,
-                          height: targetH,
-                          child: CameraPreview(_controller!),
-                        ),
-
-                        // 3x3 Rule-of-Thirds Grid Overlay (Toggleable!)
-                        if (_isGridOn)
-                          Positioned.fill(
-                            child: CustomPaint(
+                          // 3x3 Rule-of-Thirds Grid Overlay (Toggleable!)
+                          if (_isGridOn)
+                            CustomPaint(
                               painter: CameraGridPainter(),
                             ),
-                          ),
-                      ],
+
+                          // Tap Focus Ring (Circle appears where user taps)
+                          if (_showFocusRing && _focusRingPos != null)
+                            Positioned(
+                              left: _focusRingPos!.dx - 28,
+                              top: _focusRingPos!.dy - 28,
+                              child: Container(
+                                width: 56,
+                                height: 56,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: Colors.white, width: 2.0),
+                                  boxShadow: const [
+                                    BoxShadow(color: Colors.black45, blurRadius: 4),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
                     );
                   },
                 ),
@@ -1120,53 +1127,51 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
             ),
           ),
 
-          // Brightness Slider (Comfortable Thumb-Reach Height)
-          Positioned(
-            right: 12,
-            bottom: safeBottom + 140,
-            child: Container(
-              height: 210,
-              width: 48,
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.75),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: const Color(0xFFFFCC00).withOpacity(0.4), width: 1.5),
-                boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
-              ),
+          // Sleek Auto-Hiding Brightness Slider (Appears ONLY on Tap, exactly like GPS Map Camera!)
+          if (_showExposureSlider)
+            Positioned(
+              right: 18,
+              top: 200,
+              bottom: safeBottom + 200,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.wb_sunny, color: Color(0xFFFFCC00), size: 20),
+                  const Icon(Icons.wb_sunny, color: Color(0xFFFFCC00), size: 22),
+                  const SizedBox(height: 6),
                   Text(
                     _currentExposure >= 0 ? "+${_currentExposure.toStringAsFixed(1)}" : _currentExposure.toStringAsFixed(1),
-                    style: GoogleFonts.orbitron(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                    style: GoogleFonts.orbitron(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
                   ),
-                  Expanded(
+                  const SizedBox(height: 6),
+                  SizedBox(
+                    height: 140,
+                    width: 32,
                     child: RotatedBox(
                       quarterTurns: 3,
                       child: SliderTheme(
                         data: SliderTheme.of(context).copyWith(
                           thumbColor: const Color(0xFFFFCC00),
                           activeTrackColor: const Color(0xFFFFCC00),
-                          inactiveTrackColor: Colors.white24,
-                          trackHeight: 4,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                          inactiveTrackColor: Colors.white38,
+                          trackHeight: 3,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                          overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
                         ),
                         child: Slider(
                           value: _currentExposure,
                           min: _minExposure,
                           max: _maxExposure,
-                          onChanged: (val) => _setBrightness(val),
+                          onChanged: (val) {
+                            _setBrightness(val);
+                            _resetExposureTimer();
+                          },
                         ),
                       ),
                     ),
                   ),
-                  const Icon(Icons.nightlight_round, color: Color(0xFF00E5FF), size: 16),
                 ],
               ),
             ),
-          ),
 
           // Active Kanta RST Badge on Screen
           if (_kantaRstNo.isNotEmpty)
@@ -1176,7 +1181,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.85),
+                  color: Colors.black.withValues(alpha: 0.85),
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(color: const Color(0xFF00FF66), width: 1.5),
                 ),
@@ -1201,7 +1206,7 @@ class _CyberCameraScreenState extends State<CyberCameraScreen> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.85),
+                color: Colors.black.withValues(alpha: 0.85),
                 borderRadius: BorderRadius.circular(15),
                 border: Border.all(
                   color: _isInGeoFence ? const Color(0xFF00FF66) : const Color(0xFFFF3333), 
@@ -1617,7 +1622,7 @@ class CameraGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withOpacity(0.35)
+      ..color = Colors.white.withValues(alpha: 0.35)
       ..strokeWidth = 1.0;
 
     // Horizontal Lines
